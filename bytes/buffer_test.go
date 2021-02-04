@@ -8,14 +8,14 @@ func TestBuffer(t *testing.T) {
 	bufer := NewBuffer()
 	bufer.Write([]byte("hel"))
 	bufer.Write([]byte("lo world"))
-	b, err := bufer.Read(5)
+	b, err := bufer.ReadN(5)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(b) != "hello" {
 		t.Fatal(string(b))
 	}
-	b, err = bufer.Read(1)
+	b, err = bufer.ReadN(1)
 	if string(b) != " " {
 		t.Fatal(string(b))
 	}

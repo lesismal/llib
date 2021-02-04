@@ -15,8 +15,8 @@ func (bb *Buffer) Length() int {
 	return bb.total
 }
 
-// Read .
-func (bb *Buffer) Read(l int) ([]byte, error) {
+// ReadN .
+func (bb *Buffer) ReadN(l int) ([]byte, error) {
 	if len(bb.buffers) == 0 {
 		return nil, errors.New("empty Buffer")
 	}
