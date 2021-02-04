@@ -5,21 +5,41 @@ import (
 )
 
 func TestBuffer(t *testing.T) {
-	bufer := NewBuffer()
-	bufer.Write([]byte("hel"))
-	bufer.Write([]byte("lo world"))
-	b, err := bufer.ReadN(5)
+	buffer := NewBuffer()
+	buffer.Write([]byte("hel"))
+	buffer.Write([]byte("lo world"))
+	b, err := buffer.ReadN(5)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(b) != "hello" {
 		t.Fatal(string(b))
 	}
-	b, err = bufer.ReadN(1)
+	b, err = buffer.ReadN(1)
 	if string(b) != " " {
 		t.Fatal(string(b))
 	}
-	b, err = bufer.ReadAll()
+	b, err = buffer.ReadAll()
+	if string(b) != "world" {
+		t.Fatal(string(b))
+	}
+
+	buffer.Reset()
+
+	buffer.Write([]byte("hel"))
+	buffer.Write([]byte("lo world"))
+	b, err = buffer.ReadN(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "hello" {
+		t.Fatal(string(b))
+	}
+	b, err = buffer.ReadN(1)
+	if string(b) != " " {
+		t.Fatal(string(b))
+	}
+	b, err = buffer.ReadAll()
 	if string(b) != "world" {
 		t.Fatal(string(b))
 	}

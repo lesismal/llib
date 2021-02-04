@@ -75,6 +75,12 @@ func (bb *Buffer) Write(b []byte) {
 	bb.total += len(b)
 }
 
+// Reset .
+func (bb *Buffer) Reset() {
+	bb.buffers = nil
+	bb.total = 0
+}
+
 // NewBuffer .
 func NewBuffer() *Buffer {
 	return &Buffer{}
