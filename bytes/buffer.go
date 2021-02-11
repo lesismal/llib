@@ -4,24 +4,29 @@ import (
 	"errors"
 )
 
+var (
+	ErrInvalidLength = errors.New("invalid length")
+	ErrNotEnougth    = errors.New("bytes not enougth")
+)
+
 // Buffer .
 type Buffer struct {
 	total   int
 	buffers [][]byte
 }
 
-// Length .
-func (bb *Buffer) Length() int {
+// Len .
+func (bb *Buffer) Len() int {
 	return bb.total
 }
 
 // ReadN .
 func (bb *Buffer) ReadN(l int) ([]byte, error) {
-	if len(bb.buffers) == 0 {
-		return nil, errors.New("empty Buffer")
+	if l < 0 {
+		return nil, ErrInvalidLength
 	}
 	if bb.total < l {
-		return nil, errors.New("bytes not enougth")
+		return nil, ErrNotEnougth
 	}
 	var buf = bb.buffers[0]
 	if len(buf) >= l {
@@ -48,6 +53,37 @@ func (bb *Buffer) ReadN(l int) ([]byte, error) {
 		l -= len(buf)
 		buf = bb.buffers[0]
 	}
+	return ret, nil
+}
+
+// HeadN .
+func (bb *Buffer) HeadN(l int) ([]byte, error) {
+	if l < 0 {
+		return nil, ErrInvalidLength
+	}
+	if bb.total < l {
+		return nil, ErrNotEnougth
+	}
+
+	if len(bb.buffers[0]) >= l {
+		return bb.buffers[0][:l], nil
+	}
+
+	ret := make([]byte, l)
+
+	copied := 0
+	for i := 0; l > 0; i++ {
+		buf := bb.buffers[i]
+		if len(buf) >= l {
+			copy(ret[copied:], buf[:l])
+			return ret, nil
+		} else {
+			copy(ret[copied:], buf)
+			l -= len(buf)
+			copied += len(buf)
+		}
+	}
+
 	return ret, nil
 }
 
