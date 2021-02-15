@@ -111,6 +111,22 @@ func (bb *Buffer) Write(b []byte) {
 	bb.total += len(b)
 }
 
+// Append .
+func (bb *Buffer) Append(b []byte) {
+	if len(b) == 0 {
+		return
+	}
+
+	n := len(bb.buffers)
+
+	if n == 0 {
+		bb.buffers = append(bb.buffers, b)
+		return
+	}
+	bb.buffers[n-1] = append(bb.buffers[n-1], b...)
+	bb.total += len(b)
+}
+
 // Reset .
 func (bb *Buffer) Reset() {
 	bb.buffers = nil
