@@ -43,4 +43,19 @@ func TestBuffer(t *testing.T) {
 	if string(b) != "world" {
 		t.Fatal(string(b))
 	}
+	
+	buffer.Reset()
+
+	buffer.Append([]byte("hello"))
+	buffer.Append([]byte(" world"))
+	if string(buffer.buffers[0]) != "hello world" {
+		t.Fatal(string(buffer.buffers[0]))
+	}
+	b, err = buffer.ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "hello world" {
+		t.Fatal(string(b))
+	}
 }
