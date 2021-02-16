@@ -5,8 +5,9 @@ import (
 )
 
 var (
-	ErrInvalidLength = errors.New("invalid length")
-	ErrNotEnougth    = errors.New("bytes not enougth")
+	ErrInvalidLength   = errors.New("invalid length")
+	ErrInvalidPosition = errors.New("invalid position")
+	ErrNotEnougth      = errors.New("bytes not enougth")
 )
 
 // Buffer .
@@ -20,29 +21,38 @@ func (bb *Buffer) Len() int {
 	return bb.total
 }
 
-// ReadN .
-func (bb *Buffer) ReadN(l int) ([]byte, error) {
-	if l < 0 {
+// Push .
+func (bb *Buffer) Push(b []byte) {
+	if len(b) == 0 {
+		return
+	}
+	bb.buffers = append(bb.buffers, b)
+	bb.total += len(b)
+}
+
+// Pop .
+func (bb *Buffer) Pop(n int) ([]byte, error) {
+	if n < 0 {
 		return nil, ErrInvalidLength
 	}
-	if bb.total < l {
+	if bb.total < n {
 		return nil, ErrNotEnougth
 	}
 	var buf = bb.buffers[0]
-	if len(buf) >= l {
-		ret := buf[:l]
-		bb.buffers[0] = bb.buffers[0][l:]
+	if len(buf) >= n {
+		ret := buf[:n]
+		bb.buffers[0] = bb.buffers[0][n:]
 		if len(bb.buffers[0]) == 0 {
 			bb.buffers = bb.buffers[1:]
 		}
 		return ret, nil
 	}
 
-	var ret = make([]byte, l)[0:0]
-	for l > 0 {
-		if len(buf) >= l {
-			ret = append(ret, buf[:l]...)
-			bb.buffers[0] = bb.buffers[0][l:]
+	var ret = make([]byte, n)[0:0]
+	for n > 0 {
+		if len(buf) >= n {
+			ret = append(ret, buf[:n]...)
+			bb.buffers[0] = bb.buffers[0][n:]
 			if len(bb.buffers[0]) == 0 {
 				bb.buffers = bb.buffers[1:]
 			}
@@ -50,65 +60,10 @@ func (bb *Buffer) ReadN(l int) ([]byte, error) {
 		}
 		ret = append(ret, buf...)
 		bb.buffers = bb.buffers[1:]
-		l -= len(buf)
+		n -= len(buf)
 		buf = bb.buffers[0]
 	}
 	return ret, nil
-}
-
-// HeadN .
-func (bb *Buffer) HeadN(l int) ([]byte, error) {
-	if l < 0 {
-		return nil, ErrInvalidLength
-	}
-	if bb.total < l {
-		return nil, ErrNotEnougth
-	}
-
-	if len(bb.buffers[0]) >= l {
-		return bb.buffers[0][:l], nil
-	}
-
-	ret := make([]byte, l)
-
-	copied := 0
-	for i := 0; l > 0; i++ {
-		buf := bb.buffers[i]
-		if len(buf) >= l {
-			copy(ret[copied:], buf[:l])
-			return ret, nil
-		} else {
-			copy(ret[copied:], buf)
-			l -= len(buf)
-			copied += len(buf)
-		}
-	}
-
-	return ret, nil
-}
-
-// ReadAll .
-func (bb *Buffer) ReadAll() ([]byte, error) {
-	if len(bb.buffers) == 0 {
-		return nil, nil
-	}
-
-	buf := bb.buffers[0]
-	for i := 1; i < len(bb.buffers); i++ {
-		buf = append(buf, bb.buffers[i]...)
-	}
-	bb.buffers = nil
-
-	return buf, nil
-}
-
-// Write .
-func (bb *Buffer) Write(b []byte) {
-	if len(b) == 0 {
-		return
-	}
-	bb.buffers = append(bb.buffers, b)
-	bb.total += len(b)
 }
 
 // Append .
@@ -125,6 +80,101 @@ func (bb *Buffer) Append(b []byte) {
 	}
 	bb.buffers[n-1] = append(bb.buffers[n-1], b...)
 	bb.total += len(b)
+}
+
+// Head .
+func (bb *Buffer) Head(n int) ([]byte, error) {
+	if n < 0 {
+		return nil, ErrInvalidLength
+	}
+	if bb.total < n {
+		return nil, ErrNotEnougth
+	}
+
+	if len(bb.buffers[0]) >= n {
+		return bb.buffers[0][:n], nil
+	}
+
+	ret := make([]byte, n)
+
+	copied := 0
+	for i := 0; n > 0; i++ {
+		buf := bb.buffers[i]
+		if len(buf) >= n {
+			copy(ret[copied:], buf[:n])
+			return ret, nil
+		} else {
+			copy(ret[copied:], buf)
+			n -= len(buf)
+			copied += len(buf)
+		}
+	}
+
+	return ret, nil
+}
+
+// Sub .
+func (bb *Buffer) Sub(from, to int) ([]byte, error) {
+	if from < 0 || to < 0 || to < from {
+		return nil, ErrInvalidPosition
+	}
+	if bb.total < to {
+		return nil, ErrNotEnougth
+	}
+
+	if len(bb.buffers[0]) >= to {
+		return bb.buffers[0][from:to], nil
+	}
+
+	n := to - from
+	ret := make([]byte, n)
+	copied := 0
+	for i := 0; n > 0; i++ {
+		buf := bb.buffers[i]
+		if len(buf) >= from+n {
+			copy(ret[copied:], buf[from:from+n])
+			return ret, nil
+		} else {
+			if len(buf) > from {
+				if from > 0 {
+					buf = buf[from:]
+					from = 0
+				}
+				copy(ret[copied:], buf)
+				copied += len(buf)
+				n -= len(buf)
+			} else {
+				from -= len(buf)
+			}
+		}
+	}
+
+	return ret, nil
+}
+
+// Write .
+func (bb *Buffer) Write(b []byte) {
+	bb.Push(b)
+}
+
+// Read .
+func (bb *Buffer) Read(n int) ([]byte, error) {
+	return bb.Pop(n)
+}
+
+// ReadAll .
+func (bb *Buffer) ReadAll() ([]byte, error) {
+	if len(bb.buffers) == 0 {
+		return nil, nil
+	}
+
+	buf := bb.buffers[0]
+	for i := 1; i < len(bb.buffers); i++ {
+		buf = append(buf, bb.buffers[i]...)
+	}
+	bb.buffers = nil
+
+	return buf, nil
 }
 
 // Reset .
