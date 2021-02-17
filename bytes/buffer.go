@@ -187,29 +187,39 @@ func (bb *Buffer) Read(n int) ([]byte, error) {
 
 // ReadAll .
 func (bb *Buffer) ReadAll() ([]byte, error) {
-	n := len(bb.buffers)
-	if n == 0 {
+	if len(bb.buffers) == 0 {
 		return nil, nil
 	}
 
-	ret := []byte{}
-	for i := 0; i < n; i++ {
-		ret = append(ret, bb.buffers[0]...)
-		switch len(bb.buffers) {
-		case 1:
-			bb.buffers = nil
-		default:
-			bb.buffers = bb.buffers[1:]
+	ret := append([]byte{}, bb.buffers[0]...)
+	if bb.onRelease != nil {
+		bb.onRelease(bb.buffers[0])
+		for i := 1; i < len(bb.buffers); i++ {
+			ret = append(ret, bb.buffers[i]...)
+			bb.onRelease(bb.buffers[i])
+
 		}
-		bb.releaseHead()
+	} else {
+		for i := 1; i < len(bb.buffers); i++ {
+			ret = append(ret, bb.buffers[i]...)
+		}
 	}
+	bb.head = nil
 	bb.buffers = nil
+	bb.total = 0
 
 	return ret, nil
 }
 
 // Reset .
 func (bb *Buffer) Reset() {
+	if bb.onRelease != nil {
+		for i := 0; i < len(bb.buffers); i++ {
+			bb.onRelease(bb.buffers[i])
+
+		}
+	}
+	bb.head = nil
 	bb.buffers = nil
 	bb.total = 0
 }
