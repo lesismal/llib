@@ -12,8 +12,10 @@ var (
 
 // Buffer .
 type Buffer struct {
-	total   int
-	buffers [][]byte
+	total     int
+	buffers   [][]byte
+	head      []byte
+	onRelease func(b []byte)
 }
 
 // Len .
@@ -28,6 +30,9 @@ func (bb *Buffer) Push(b []byte) {
 	}
 	bb.buffers = append(bb.buffers, b)
 	bb.total += len(b)
+	if len(bb.buffers) == 1 {
+		bb.head = b
+	}
 }
 
 // Pop .
@@ -43,7 +48,13 @@ func (bb *Buffer) Pop(n int) ([]byte, error) {
 		ret := buf[:n]
 		bb.buffers[0] = bb.buffers[0][n:]
 		if len(bb.buffers[0]) == 0 {
-			bb.buffers = bb.buffers[1:]
+			switch len(bb.buffers) {
+			case 1:
+				bb.buffers = nil
+			default:
+				bb.buffers = bb.buffers[1:]
+			}
+			bb.releaseHead()
 		}
 		return ret, nil
 	}
@@ -54,12 +65,24 @@ func (bb *Buffer) Pop(n int) ([]byte, error) {
 			ret = append(ret, buf[:n]...)
 			bb.buffers[0] = bb.buffers[0][n:]
 			if len(bb.buffers[0]) == 0 {
-				bb.buffers = bb.buffers[1:]
+				switch len(bb.buffers) {
+				case 1:
+					bb.buffers = nil
+				default:
+					bb.buffers = bb.buffers[1:]
+				}
+				bb.releaseHead()
 			}
 			return ret, nil
 		}
 		ret = append(ret, buf...)
-		bb.buffers = bb.buffers[1:]
+		switch len(bb.buffers) {
+		case 1:
+			bb.buffers = nil
+		default:
+			bb.buffers = bb.buffers[1:]
+		}
+		bb.releaseHead()
 		n -= len(buf)
 		buf = bb.buffers[0]
 	}
@@ -164,23 +187,46 @@ func (bb *Buffer) Read(n int) ([]byte, error) {
 
 // ReadAll .
 func (bb *Buffer) ReadAll() ([]byte, error) {
-	if len(bb.buffers) == 0 {
+	n := len(bb.buffers)
+	if n == 0 {
 		return nil, nil
 	}
 
-	buf := bb.buffers[0]
-	for i := 1; i < len(bb.buffers); i++ {
-		buf = append(buf, bb.buffers[i]...)
+	ret := []byte{}
+	for i := 0; i < n; i++ {
+		ret = append(ret, bb.buffers[0]...)
+		switch len(bb.buffers) {
+		case 1:
+			bb.buffers = nil
+		default:
+			bb.buffers = bb.buffers[1:]
+		}
+		bb.releaseHead()
 	}
 	bb.buffers = nil
 
-	return buf, nil
+	return ret, nil
 }
 
 // Reset .
 func (bb *Buffer) Reset() {
 	bb.buffers = nil
 	bb.total = 0
+}
+
+func (bb *Buffer) OnRelease(onRelease func(b []byte)) {
+	bb.onRelease = onRelease
+}
+
+func (bb *Buffer) releaseHead() {
+	if bb.head != nil && bb.onRelease != nil {
+		bb.onRelease(bb.head)
+	}
+	if len(bb.buffers) > 0 {
+		bb.head = bb.buffers[0]
+	} else {
+		bb.head = nil
+	}
 }
 
 // NewBuffer .
