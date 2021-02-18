@@ -3,7 +3,7 @@ package parser
 import (
 	"net/http"
 
-	"github.com/lesismal/lib/bytes"
+	"github.com/lesismal/llib/bytes"
 )
 
 const (

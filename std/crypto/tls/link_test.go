@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/lesismal/lib/std/internal/testenv"
+	"github.com/lesismal/llib/std/internal/testenv"
 )
 
 // Tests that the linker is able to remove references to the Client or Server if unused.

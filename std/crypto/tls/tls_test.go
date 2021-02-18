@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lesismal/lib/std/internal/testenv"
+	"github.com/lesismal/llib/std/internal/testenv"
 )
 
 var rsaCertPEM = `-----BEGIN CERTIFICATE-----
