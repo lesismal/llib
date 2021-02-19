@@ -16,10 +16,16 @@ func TestBuffer(t *testing.T) {
 		t.Fatal(string(b))
 	}
 	b, err = buffer.Read(1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(b) != " " {
 		t.Fatal(string(b))
 	}
 	b, err = buffer.ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(b) != "world" {
 		t.Fatal(string(b))
 	}
@@ -36,10 +42,16 @@ func TestBuffer(t *testing.T) {
 		t.Fatal(string(b))
 	}
 	b, err = buffer.Read(1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(b) != " " {
 		t.Fatal(string(b))
 	}
 	b, err = buffer.ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(b) != "world" {
 		t.Fatal(string(b))
 	}
