@@ -22,9 +22,7 @@ import (
 	"time"
 )
 
-var (
-	errDataNotEnough = errors.New("data not enough")
-)
+var errDataNotEnough = errors.New("data not enough")
 
 // A Conn represents a secured connection.
 // It implements the net.Conn interface.
@@ -38,6 +36,7 @@ type Conn struct {
 	// application data (i.e. is not currently processing a handshake).
 	// This field is only to be accessed with sync/atomic.
 	handshakeStatus uint32
+
 	// constant after handshake; protected by handshakeMutex
 	handshakeMutex sync.Mutex
 	handshakeErr   error   // error resulting from handshake
@@ -122,6 +121,14 @@ type Conn struct {
 
 	isNonBlock bool
 	readBuffer []byte
+
+	handshakeStatusAsync uint32
+	clientHello          *clientHelloMsg
+	serverHello          *serverHelloMsg
+	hs                   *serverHandshakeState
+	hs13                 *serverHandshakeStateTLS13
+	certMsg              *certificateMsgTLS13
+	certMsgVerified      []bool
 }
 
 // Access to net.Conn methods.
@@ -333,7 +340,6 @@ func (hc *halfConn) decrypt(record []byte) ([]byte, recordType, error) {
 	var plaintext []byte
 	typ := recordType(record[0])
 	payload := record[recordHeaderLen:]
-
 	// In TLS 1.3, change_cipher_spec messages are to be ignored without being
 	// decrypted. See RFC 8446, Appendix D.4.
 	if hc.version == VersionTLS13 && typ == recordTypeChangeCipherSpec {
@@ -597,36 +603,15 @@ func (c *Conn) readChangeCipherSpec() error {
 //   - c.hand grows
 //   - c.input is set
 //   - an error is returned
+
 func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	if c.in.err != nil {
 		return c.in.err
 	}
 	handshakeComplete := c.handshakeComplete()
 
-	// This function modifies c.rawInput, which owns the c.input memory.
-	if c.input.Len() != 0 {
-		return c.in.setErrorLocked(errors.New("tls: internal error: attempted to read record with pending application data"))
-	}
-	c.input.Reset(nil)
-
-	// Read header, payload.
-	if err := c.readFromUntil(c.conn, recordHeaderLen); err != nil {
-		if err == errDataNotEnough {
-			return nil
-		}
-		// RFC 8446, Section 6.1 suggests that EOF without an alertCloseNotify
-		// is an error, but popular web sites seem to do this, so we accept it
-		// if and only if at the record boundary.
-		if err == errDataNotEnough {
-			return nil
-		}
-		if err == io.ErrUnexpectedEOF && c.rawInput.Len() == 0 {
-			err = io.EOF
-		}
-		if e, ok := err.(net.Error); !ok || !e.Temporary() {
-			c.in.setErrorLocked(err)
-		}
-		return err
+	if c.rawInput.Len() < recordHeaderLen {
+		return errDataNotEnough
 	}
 	hdr := c.rawInput.Bytes()[:recordHeaderLen]
 	typ := recordType(hdr[0])
@@ -661,14 +646,9 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 		msg := fmt.Sprintf("oversized record received with length %d", n)
 		return c.in.setErrorLocked(c.newRecordHeaderError(nil, msg))
 	}
-	if err := c.readFromUntil(c.conn, recordHeaderLen+n); err != nil {
-		if err == errDataNotEnough {
-			return nil
-		}
-		if e, ok := err.(net.Error); !ok || !e.Temporary() {
-			c.in.setErrorLocked(err)
-		}
-		return err
+
+	if c.rawInput.Len() < recordHeaderLen+n {
+		return errDataNotEnough
 	}
 
 	// Process message.
@@ -699,7 +679,6 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	switch typ {
 	default:
 		return c.in.setErrorLocked(c.sendAlert(alertUnexpectedMessage))
-
 	case recordTypeAlert:
 		if len(data) != 2 {
 			return c.in.setErrorLocked(c.sendAlert(alertUnexpectedMessage))
@@ -811,26 +790,26 @@ func (c *Conn) readFromUntil(r io.Reader, n int) error {
 	// There might be extra input waiting on the wire. Make a best effort
 	// attempt to fetch it so that it can be used in (*Conn).Read to
 	// "predict" closeNotify alerts.
-	c.rawInput.Grow(needs + bytes.MinRead)
-	// log.Println("--- readFromUntil:", c.isNonBlock)
-	// log.Println("stacks:")
-	// debug.PrintStack()
-	if c.isNonBlock {
+	if c.isNonBlock && needs > 0 {
 		// buf := make([]byte, 1024)
-		n, err := r.Read(c.readBuffer)
-		if err == nil {
-			c.rawInput.Write(c.readBuffer[:n])
+		nread, err := r.Read(c.readBuffer)
+		if nread > 0 {
+			c.rawInput.Grow(n + bytes.MinRead)
+			c.rawInput.Write(c.readBuffer[:nread])
 		}
 		// n, err := c.rawInput.ReadFrom(r)
-		// log.Println("--- c.rawInput.ReadFrom:", n, err)
-		if err != nil && err != syscall.EINTR && err != syscall.EAGAIN && err != syscall.EWOULDBLOCK {
+		if err != nil {
+			if err == syscall.EINTR || err == syscall.EAGAIN || err == syscall.EWOULDBLOCK {
+				return errDataNotEnough
+			}
 			return err
 		}
-		if int(n) < needs {
+		if nread < needs {
 			return errDataNotEnough
 		}
 		return err
 	}
+	c.rawInput.Grow(needs + bytes.MinRead)
 	_, err := c.rawInput.ReadFrom(&atLeastReader{r, int64(needs)})
 	return err
 }
@@ -1040,7 +1019,7 @@ func (c *Conn) writeRecord(typ recordType, data []byte) (int, error) {
 // readHandshake reads the next handshake message from
 // the record layer.
 func (c *Conn) readHandshake() (interface{}, error) {
-	for c.hand.Len() < 4 {
+	if c.hand.Len() < 4 {
 		if err := c.readRecord(); err != nil {
 			return nil, err
 		}
@@ -1052,7 +1031,7 @@ func (c *Conn) readHandshake() (interface{}, error) {
 		c.sendAlertLocked(alertInternalError)
 		return nil, c.in.setErrorLocked(fmt.Errorf("tls: handshake message of length %d bytes exceeds maximum of %d bytes", n, maxHandshake))
 	}
-	for c.hand.Len() < 4+n {
+	if c.hand.Len() < 4+n {
 		if err := c.readRecord(); err != nil {
 			return nil, err
 		}
@@ -1145,6 +1124,9 @@ func (c *Conn) Write(b []byte) (int, error) {
 	defer atomic.AddInt32(&c.activeCall, -2)
 
 	if err := c.Handshake(); err != nil {
+		if c.isNonBlock && err == errDataNotEnough {
+			return 0, nil
+		}
 		return 0, err
 	}
 
@@ -1289,6 +1271,14 @@ func (c *Conn) handleKeyUpdate(keyUpdate *keyUpdateMsg) error {
 	return nil
 }
 
+// Append .
+func (c *Conn) Append(b []byte) (int, error) {
+	if len(b) > 0 {
+		return c.rawInput.Write(b)
+	}
+	return 0, nil
+}
+
 // Read reads data from the connection.
 //
 // As Read calls Handshake, in order to prevent indefinite blocking a deadline
@@ -1296,13 +1286,13 @@ func (c *Conn) handleKeyUpdate(keyUpdate *keyUpdateMsg) error {
 // has not yet completed. See SetDeadline, SetReadDeadline, and
 // SetWriteDeadline.
 func (c *Conn) Read(b []byte) (int, error) {
-	// log.Println("tls.Conn.Read 111")
 	if err := c.Handshake(); err != nil {
-		// log.Println("tls.Conn.Read 222:", err)
+		if c.isNonBlock && err == errDataNotEnough {
+			return 0, nil
+		}
 		return 0, err
 	}
 	if len(b) == 0 {
-		// log.Println("tls.Conn.Read 333")
 		// Put this after Handshake, in case people were calling
 		// Read(nil) for the side effect of the Handshake.
 		return 0, nil
@@ -1312,21 +1302,22 @@ func (c *Conn) Read(b []byte) (int, error) {
 	defer c.in.Unlock()
 
 	for c.input.Len() == 0 {
-		// log.Println("tls.Conn.Read 444")
 		if err := c.readRecord(); err != nil {
-			// log.Println("tls.Conn.Read 555:", err)
+			if c.isNonBlock && err == errDataNotEnough {
+				return 0, nil
+			}
 			return 0, err
 		}
 		for c.hand.Len() > 0 {
 			if err := c.handlePostHandshakeMessage(); err != nil {
-				// log.Println("tls.Conn.Read 666:", err)
+				if c.isNonBlock && err == errDataNotEnough {
+					return 0, nil
+				}
 				return 0, err
 			}
 		}
 	}
-	// log.Println("tls.Conn.Read 777")
 	n, _ := c.input.Read(b)
-	// log.Println("tls.Conn.Read 888:", n)
 
 	// If a close-notify alert is waiting, read it so that we can return (n,
 	// EOF) instead of (n, nil), to signal to the HTTP response reading
@@ -1338,11 +1329,12 @@ func (c *Conn) Read(b []byte) (int, error) {
 	if n != 0 && c.input.Len() == 0 && c.rawInput.Len() > 0 &&
 		recordType(c.rawInput.Bytes()[0]) == recordTypeAlert {
 		if err := c.readRecord(); err != nil {
-			// log.Println("tls.Conn.Read 999:", err)
+			if c.isNonBlock && err == errDataNotEnough {
+				return 0, nil
+			}
 			return n, err // will be io.EOF on closeNotify
 		}
 	}
-	// log.Println("tls.Conn.Read aaa")
 	return n, nil
 }
 
@@ -1419,7 +1411,6 @@ func (c *Conn) closeNotify() error {
 // For control over canceling or setting a timeout on a handshake, use
 // the Dialer's DialContext method.
 func (c *Conn) Handshake() error {
-	// log.Println("--- Handshake times:", c.handshakes)
 	c.handshakeMutex.Lock()
 	defer c.handshakeMutex.Unlock()
 
@@ -1432,8 +1423,11 @@ func (c *Conn) Handshake() error {
 
 	c.in.Lock()
 	defer c.in.Unlock()
-
 	c.handshakeErr = c.handshakeFn()
+	if c.isNonBlock && c.handshakeErr == errDataNotEnough {
+		c.handshakeErr = nil
+		return errDataNotEnough
+	}
 	if c.handshakeErr == nil {
 		c.handshakes++
 	} else {
@@ -1445,7 +1439,6 @@ func (c *Conn) Handshake() error {
 	if c.handshakeErr == nil && !c.handshakeComplete() {
 		c.handshakeErr = errors.New("tls: internal error: handshake should have had a result")
 	}
-
 	return c.handshakeErr
 }
 

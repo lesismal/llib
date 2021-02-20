@@ -19,6 +19,19 @@ import (
 	"time"
 )
 
+const (
+	stateServerHandshakeReadClientHello         uint32 = 1
+	stateServerHandshake13ProcessClientHello    uint32 = 2
+	stateServerHandshake13CheckForResumption    uint32 = 3
+	stateServerHandshake13PickCertificate       uint32 = 4
+	stateServerHandshake13SendServerParameters  uint32 = 5
+	stateServerHandshake13SendServerCertificate uint32 = 6
+	stateServerHandshake13SendServerFinished    uint32 = 7
+	stateServerHandshake13ReadClientCertificate uint32 = 8
+	stateServerHandshake13ReadClientFinished    uint32 = 9
+	stateServerHandshake13Handshake             uint32 = 10
+)
+
 // serverHandshakeState contains details of a server handshake in progress.
 // It's discarded once the handshake has completed.
 type serverHandshakeState struct {
@@ -38,22 +51,34 @@ type serverHandshakeState struct {
 
 // serverHandshake performs a TLS handshake as a server.
 func (c *Conn) serverHandshake() error {
-	clientHello, err := c.readClientHello()
-	if err != nil {
-		return err
-	}
+	var err error
 
+	if c.handshakeStatusAsync < stateServerHandshakeReadClientHello {
+		c.clientHello, err = c.readClientHello()
+		if err != nil {
+			return err
+		}
+		c.handshakeStatusAsync = stateServerHandshakeReadClientHello
+	}
 	if c.vers == VersionTLS13 {
-		hs := serverHandshakeStateTLS13{
-			c:           c,
-			clientHello: clientHello,
+		hs := c.hs13
+		if hs == nil {
+			hs = &serverHandshakeStateTLS13{
+				c:           c,
+				clientHello: c.clientHello,
+			}
+			c.hs13 = hs
 		}
 		return hs.handshake()
 	}
 
-	hs := serverHandshakeState{
-		c:           c,
-		clientHello: clientHello,
+	hs := c.hs
+	if hs == nil {
+		hs = &serverHandshakeState{
+			c:           c,
+			clientHello: c.clientHello,
+		}
+		c.hs = hs
 	}
 	return hs.handshake()
 }
@@ -66,7 +91,7 @@ func (hs *serverHandshakeState) handshake() error {
 	}
 
 	// For an overview of TLS handshaking, see RFC 5246, Section 7.3.
-	c.buffering = true
+	// c.buffering = true
 	if hs.checkForResumption() {
 		// The client has included a session ticket and so we do an abbreviated handshake.
 		c.didResume = true
@@ -105,7 +130,7 @@ func (hs *serverHandshakeState) handshake() error {
 			return err
 		}
 		c.clientFinishedIsFirst = true
-		c.buffering = true
+		// c.buffering = true
 		if err := hs.sendSessionTicket(); err != nil {
 			return err
 		}
