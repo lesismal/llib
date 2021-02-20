@@ -18,7 +18,6 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -120,7 +119,7 @@ type Conn struct {
 	tmp [16]byte
 
 	isNonBlock bool
-	readBuffer []byte
+	ReadBuffer []byte
 
 	handshakeStatusAsync uint32
 	clientHello          *clientHelloMsg
@@ -790,25 +789,6 @@ func (c *Conn) readFromUntil(r io.Reader, n int) error {
 	// There might be extra input waiting on the wire. Make a best effort
 	// attempt to fetch it so that it can be used in (*Conn).Read to
 	// "predict" closeNotify alerts.
-	if c.isNonBlock && needs > 0 {
-		// buf := make([]byte, 1024)
-		nread, err := r.Read(c.readBuffer)
-		if nread > 0 {
-			c.rawInput.Grow(n + bytes.MinRead)
-			c.rawInput.Write(c.readBuffer[:nread])
-		}
-		// n, err := c.rawInput.ReadFrom(r)
-		if err != nil {
-			if err == syscall.EINTR || err == syscall.EAGAIN || err == syscall.EWOULDBLOCK {
-				return errDataNotEnough
-			}
-			return err
-		}
-		if nread < needs {
-			return errDataNotEnough
-		}
-		return err
-	}
 	c.rawInput.Grow(needs + bytes.MinRead)
 	_, err := c.rawInput.ReadFrom(&atLeastReader{r, int64(needs)})
 	return err
