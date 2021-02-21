@@ -14,7 +14,6 @@ var (
 type Buffer struct {
 	total     int
 	buffers   [][]byte
-	head      []byte
 	onRelease func(b []byte)
 }
 
@@ -30,9 +29,6 @@ func (bb *Buffer) Push(b []byte) {
 	}
 	bb.buffers = append(bb.buffers, b)
 	bb.total += len(b)
-	if len(bb.buffers) == 1 {
-		bb.head = b
-	}
 }
 
 // Pop .
@@ -48,12 +44,6 @@ func (bb *Buffer) Pop(n int) ([]byte, error) {
 		ret := buf[:n]
 		bb.buffers[0] = bb.buffers[0][n:]
 		if len(bb.buffers[0]) == 0 {
-			switch len(bb.buffers) {
-			case 1:
-				bb.buffers = nil
-			default:
-				bb.buffers = bb.buffers[1:]
-			}
 			bb.releaseHead()
 		}
 		return ret, nil
@@ -65,23 +55,11 @@ func (bb *Buffer) Pop(n int) ([]byte, error) {
 			ret = append(ret, buf[:n]...)
 			bb.buffers[0] = bb.buffers[0][n:]
 			if len(bb.buffers[0]) == 0 {
-				switch len(bb.buffers) {
-				case 1:
-					bb.buffers = nil
-				default:
-					bb.buffers = bb.buffers[1:]
-				}
 				bb.releaseHead()
 			}
 			return ret, nil
 		}
 		ret = append(ret, buf...)
-		switch len(bb.buffers) {
-		case 1:
-			bb.buffers = nil
-		default:
-			bb.buffers = bb.buffers[1:]
-		}
 		bb.releaseHead()
 		n -= len(buf)
 		buf = bb.buffers[0]
@@ -204,7 +182,6 @@ func (bb *Buffer) ReadAll() ([]byte, error) {
 			ret = append(ret, bb.buffers[i]...)
 		}
 	}
-	bb.head = nil
 	bb.buffers = nil
 	bb.total = 0
 
@@ -219,7 +196,6 @@ func (bb *Buffer) Reset() {
 
 		}
 	}
-	bb.head = nil
 	bb.buffers = nil
 	bb.total = 0
 }
@@ -229,13 +205,14 @@ func (bb *Buffer) OnRelease(onRelease func(b []byte)) {
 }
 
 func (bb *Buffer) releaseHead() {
-	if bb.head != nil && bb.onRelease != nil {
-		bb.onRelease(bb.head)
+	if bb.onRelease != nil {
+		bb.onRelease(bb.buffers[0])
 	}
-	if len(bb.buffers) > 0 {
-		bb.head = bb.buffers[0]
-	} else {
-		bb.head = nil
+	switch len(bb.buffers) {
+	case 1:
+		bb.buffers = nil
+	default:
+		bb.buffers = bb.buffers[1:]
 	}
 }
 
