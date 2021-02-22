@@ -37,56 +37,76 @@ type serverHandshakeStateTLS13 struct {
 	trafficSecret   []byte // client_application_traffic_secret_0
 	transcript      hash.Hash
 	clientFinished  []byte
+
+	err error
 }
 
 func (hs *serverHandshakeStateTLS13) handshake() error {
 	c := hs.c
-	if c.handshakeStatusAsync >= stateServerHandshake13Handshake {
+
+	if c.handshakeStatusAsync >= stateServerHandshake13HandshakeDone {
 		return nil
 	}
+	if hs.err != nil && hs.err != errDataNotEnough {
+		return hs.err
+	}
+
 	// For an overview of the TLS 1.3 handshake, see RFC 8446, Section 2.
 	if err := hs.processClientHello(); err != nil {
+		hs.err = err
 		return err
 	}
+
 	if err := hs.checkForResumption(); err != nil {
+		hs.err = err
 		return err
 	}
+
 	if err := hs.pickCertificate(); err != nil {
+		hs.err = err
 		return err
 	}
 	// c.buffering = true
 	if err := hs.sendServerParameters(); err != nil {
+		hs.err = err
 		return err
 	}
 	if err := hs.sendServerCertificate(); err != nil {
+		hs.err = err
 		return err
 	}
 	if err := hs.sendServerFinished(); err != nil {
+		hs.err = err
 		return err
 	}
 	// Note that at this point we could start sending application data without
 	// waiting for the client's second flight, but the application might not
 	// expect the lack of replay protection of the ClientHello parameters.
 	if _, err := c.flush(); err != nil {
+		hs.err = err
 		return err
 	}
 	if err := hs.readClientCertificate(); err != nil {
+		hs.err = err
 		return err
 	}
 	if err := hs.readClientFinished(); err != nil {
+		hs.err = err
 		return err
 	}
 
-	c.handshakeStatusAsync = stateServerHandshake13Handshake
+	c.handshakeStatusAsync = stateServerHandshake13HandshakeDone
 	atomic.StoreUint32(&c.handshakeStatus, 1)
 	return nil
 }
 
 func (hs *serverHandshakeStateTLS13) processClientHello() error {
 	c := hs.c
+
 	if c.handshakeStatusAsync >= stateServerHandshake13ProcessClientHello {
 		return nil
 	}
+	c.handshakeStatusAsync = stateServerHandshake13ProcessClientHello
 
 	hs.hello = new(serverHelloMsg)
 
@@ -239,7 +259,6 @@ GroupSelection:
 
 	c.serverName = hs.clientHello.serverName
 
-	c.handshakeStatusAsync = stateServerHandshake13ProcessClientHello
 	return nil
 }
 
@@ -249,9 +268,9 @@ func (hs *serverHandshakeStateTLS13) checkForResumption() error {
 	if c.handshakeStatusAsync >= stateServerHandshake13CheckForResumption {
 		return nil
 	}
+	c.handshakeStatusAsync = stateServerHandshake13CheckForResumption
 
 	if c.config.SessionTicketsDisabled {
-		c.handshakeStatusAsync = stateServerHandshake13CheckForResumption
 		return nil
 	}
 
@@ -263,7 +282,6 @@ func (hs *serverHandshakeStateTLS13) checkForResumption() error {
 		}
 	}
 	if !modeOK {
-		c.handshakeStatusAsync = stateServerHandshake13CheckForResumption
 		return nil
 	}
 
@@ -272,7 +290,6 @@ func (hs *serverHandshakeStateTLS13) checkForResumption() error {
 		return errors.New("tls: invalid or missing PSK binders")
 	}
 	if len(hs.clientHello.pskIdentities) == 0 {
-		c.handshakeStatusAsync = stateServerHandshake13CheckForResumption
 		return nil
 	}
 
@@ -342,11 +359,8 @@ func (hs *serverHandshakeStateTLS13) checkForResumption() error {
 		hs.hello.selectedIdentity = uint16(i)
 		hs.usingPSK = true
 
-		c.handshakeStatusAsync = stateServerHandshake13CheckForResumption
 		return nil
 	}
-
-	c.handshakeStatusAsync = stateServerHandshake13CheckForResumption
 
 	return nil
 }
@@ -384,10 +398,10 @@ func (hs *serverHandshakeStateTLS13) pickCertificate() error {
 	if c.handshakeStatusAsync >= stateServerHandshake13PickCertificate {
 		return nil
 	}
+	c.handshakeStatusAsync = stateServerHandshake13PickCertificate
 
 	// Only one of PSK and certificates are used at a time.
 	if hs.usingPSK {
-		c.handshakeStatusAsync = stateServerHandshake13PickCertificate
 		return nil
 	}
 
@@ -413,8 +427,6 @@ func (hs *serverHandshakeStateTLS13) pickCertificate() error {
 		return err
 	}
 	hs.cert = certificate
-
-	c.handshakeStatusAsync = stateServerHandshake13PickCertificate
 
 	return nil
 }
@@ -555,6 +567,7 @@ func (hs *serverHandshakeStateTLS13) sendServerParameters() error {
 	if c.handshakeStatusAsync >= stateServerHandshake13SendServerParameters {
 		return nil
 	}
+	c.handshakeStatusAsync = stateServerHandshake13SendServerParameters
 
 	hs.transcript.Write(hs.clientHello.marshal())
 	hs.transcript.Write(hs.hello.marshal())
@@ -605,8 +618,6 @@ func (hs *serverHandshakeStateTLS13) sendServerParameters() error {
 		return err
 	}
 
-	c.handshakeStatusAsync = stateServerHandshake13SendServerParameters
-
 	return nil
 }
 
@@ -620,10 +631,10 @@ func (hs *serverHandshakeStateTLS13) sendServerCertificate() error {
 	if c.handshakeStatusAsync >= stateServerHandshake13SendServerCertificate {
 		return nil
 	}
+	c.handshakeStatusAsync = stateServerHandshake13SendServerCertificate
 
 	// Only one of PSK and certificates are used at a time.
 	if hs.usingPSK {
-		c.handshakeStatusAsync = stateServerHandshake13SendServerCertificate
 		return nil
 	}
 
@@ -686,7 +697,6 @@ func (hs *serverHandshakeStateTLS13) sendServerCertificate() error {
 		return err
 	}
 
-	c.handshakeStatusAsync = stateServerHandshake13SendServerCertificate
 	return nil
 }
 
@@ -695,6 +705,7 @@ func (hs *serverHandshakeStateTLS13) sendServerFinished() error {
 	if c.handshakeStatusAsync >= stateServerHandshake13SendServerFinished {
 		return nil
 	}
+	c.handshakeStatusAsync = stateServerHandshake13SendServerFinished
 
 	finished := &finishedMsg{
 		verifyData: hs.suite.finishedHash(c.out.trafficSecret, hs.transcript),
@@ -738,7 +749,6 @@ func (hs *serverHandshakeStateTLS13) sendServerFinished() error {
 		}
 	}
 
-	c.handshakeStatusAsync = stateServerHandshake13SendServerFinished
 	return nil
 }
 
@@ -827,12 +837,16 @@ func (hs *serverHandshakeStateTLS13) readClientCertificate() error {
 	if c.certMsg == nil {
 		msg, err := c.readHandshake()
 		if err != nil {
+			if err != errDataNotEnough {
+				c.handshakeStatusAsync = stateServerHandshake13ReadClientCertificate
+			}
 			return err
 		}
 
 		certMsg, ok := msg.(*certificateMsgTLS13)
 		if !ok {
 			c.sendAlert(alertUnexpectedMessage)
+			c.handshakeStatusAsync = stateServerHandshake13ReadClientCertificate
 			return unexpectedMessageError(certMsg, msg)
 		}
 		c.certMsg = certMsg
@@ -840,12 +854,14 @@ func (hs *serverHandshakeStateTLS13) readClientCertificate() error {
 		hs.transcript.Write(certMsg.marshal())
 
 		if err := c.processCertsFromClient(certMsg.certificate); err != nil {
+			c.handshakeStatusAsync = stateServerHandshake13ReadClientCertificate
 			return err
 		}
 
 		if c.config.VerifyConnection != nil {
 			if err := c.config.VerifyConnection(c.connectionStateLocked()); err != nil {
 				c.sendAlert(alertBadCertificate)
+				c.handshakeStatusAsync = stateServerHandshake13ReadClientCertificate
 				return err
 			}
 		}
@@ -861,32 +877,40 @@ func (hs *serverHandshakeStateTLS13) readClientCertificate() error {
 			} else {
 				msg, err := c.readHandshake()
 				if err != nil {
+					if err != errDataNotEnough {
+						c.handshakeStatusAsync = stateServerHandshake13ReadClientCertificate
+					}
 					return err
 				}
 
 				certVerify, ok := msg.(*certificateVerifyMsg)
 				if !ok {
 					c.sendAlert(alertUnexpectedMessage)
+					c.handshakeStatusAsync = stateServerHandshake13ReadClientCertificate
 					return unexpectedMessageError(certVerify, msg)
 				}
 
 				// See RFC 8446, Section 4.4.3.
 				if !isSupportedSignatureAlgorithm(certVerify.signatureAlgorithm, supportedSignatureAlgorithms) {
 					c.sendAlert(alertIllegalParameter)
+					c.handshakeStatusAsync = stateServerHandshake13ReadClientCertificate
 					return errors.New("tls: client certificate used with invalid signature algorithm")
 				}
 				sigType, sigHash, err := typeAndHashFromSignatureScheme(certVerify.signatureAlgorithm)
 				if err != nil {
+					c.handshakeStatusAsync = stateServerHandshake13ReadClientCertificate
 					return c.sendAlert(alertInternalError)
 				}
 				if sigType == signaturePKCS1v15 || sigHash == crypto.SHA1 {
 					c.sendAlert(alertIllegalParameter)
+					c.handshakeStatusAsync = stateServerHandshake13ReadClientCertificate
 					return errors.New("tls: client certificate used with invalid signature algorithm")
 				}
 				signed := signedMessage(sigHash, clientSignatureContext, hs.transcript)
 				if err := verifyHandshakeSignature(sigType, c.peerCertificates[0].PublicKey,
 					sigHash, signed, certVerify.signature); err != nil {
 					c.sendAlert(alertDecryptError)
+					c.handshakeStatusAsync = stateServerHandshake13ReadClientCertificate
 					return errors.New("tls: invalid signature by the client certificate: " + err.Error())
 				}
 
@@ -902,13 +926,16 @@ func (hs *serverHandshakeStateTLS13) readClientCertificate() error {
 
 	if i == len(c.certMsg.certificate.Certificate) {
 		if err := hs.sendSessionTickets(); err != nil {
+			c.handshakeStatusAsync = stateServerHandshake13ReadClientCertificate
 			return err
 		}
 		c.handshakeStatusAsync = stateServerHandshake13ReadClientCertificate
 		return nil
 	}
 
-	return errDataNotEnough
+	c.handshakeStatusAsync = stateServerHandshake13ReadClientCertificate
+
+	return nil
 }
 
 func (hs *serverHandshakeStateTLS13) readClientFinished() error {
@@ -919,17 +946,22 @@ func (hs *serverHandshakeStateTLS13) readClientFinished() error {
 
 	msg, err := c.readHandshake()
 	if err != nil {
+		if err != errDataNotEnough {
+			c.handshakeStatusAsync = stateServerHandshake13ReadClientFinished
+		}
 		return err
 	}
 
 	finished, ok := msg.(*finishedMsg)
 	if !ok {
 		c.sendAlert(alertUnexpectedMessage)
+		c.handshakeStatusAsync = stateServerHandshake13ReadClientFinished
 		return unexpectedMessageError(finished, msg)
 	}
 
 	if !hmac.Equal(hs.clientFinished, finished.verifyData) {
 		c.sendAlert(alertDecryptError)
+		c.handshakeStatusAsync = stateServerHandshake13ReadClientFinished
 		return errors.New("tls: invalid client finished hash")
 	}
 
