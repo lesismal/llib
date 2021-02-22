@@ -42,25 +42,31 @@ const (
 	stateServerHandshakeSendSessionTicket uint32 = 205
 	stateServerHandshakeSendFinished      uint32 = 206
 
-	stateServerHandshakeReadFinishedReadChangeCipherSpec uint32 = 207
+	stateServerHandshakePickCipherSuite2                       uint32 = 208
+	stateServerHandshakeDoFullHandshake2                       uint32 = 209
+	stateServerHandshakeDoFullHandshake2ReadHandshake1         uint32 = 210
+	stateServerHandshakeDoFullHandshake2HandleCertificateMsg   uint32 = 211
+	stateServerHandshakeDoFullHandshake2ReadHandshake2         uint32 = 212
+	stateServerHandshakeDoFullHandshake2HandleVerifyConnection uint32 = 213
+	stateServerHandshakeDoFullHandshake2ReadHandshake3         uint32 = 214
+	stateServerHandshakeEstablishKeys2                         uint32 = 215
 
-	stateServerHandshakePickCipherSuite2 uint32 = 208
-	stateServerHandshakeDoFullHandshake2 uint32 = 209
-	stateServerHandshakeEstablishKeys2   uint32 = 210
+	stateServerHandshakeReadFinishedReadChangeCipherSpec uint32 = 216
+	stateServerHandshakeReadFinishedDone                 uint32 = 217
 
-	stateServerHandshakeReadFinishedDone uint32 = 211
+	stateServerHandshakeSendSessionTicket2 uint32 = 218
+	stateServerHandshakeSendFinished2      uint32 = 218
 
-	stateServerHandshakeSendSessionTicket2 uint32 = 212
-	stateServerHandshakeSendFinished2      uint32 = 213
-
-	stateServerHandshakeHandshakeDone uint32 = 214
+	stateServerHandshakeHandshakeDone uint32 = 220
 )
 
 // serverHandshakeState contains details of a server handshake in progress.
 // It's discarded once the handshake has completed.
 type serverHandshakeState struct {
-	c            *Conn
-	ok           bool
+	c  *Conn
+	ok bool
+	// msg          interface{}
+	ka           keyAgreement
 	clientHello  *clientHelloMsg
 	hello        *serverHelloMsg
 	suite        *cipherSuite
@@ -112,7 +118,6 @@ func (c *Conn) serverHandshake() error {
 
 func (hs *serverHandshakeState) handshake() error {
 	c := hs.c
-
 	if c.handshakeStatusAsync >= stateServerHandshakeHandshakeDone {
 		return nil
 	}
@@ -164,6 +169,8 @@ func (hs *serverHandshakeState) handshake() error {
 		}
 		if err := hs.doFullHandshake(); err != nil {
 			hs.err = err
+			if err != errDataNotEnough {
+			}
 			return err
 		}
 		if err := hs.establishKeys(); err != nil {
@@ -172,6 +179,8 @@ func (hs *serverHandshakeState) handshake() error {
 		}
 		if err := hs.readFinished(c.clientFinished[:]); err != nil {
 			hs.err = err
+			if err != errDataNotEnough {
+			}
 			return err
 		}
 		c.clientFinishedIsFirst = true
@@ -561,153 +570,178 @@ func (hs *serverHandshakeState) doResumeHandshake() error {
 func (hs *serverHandshakeState) doFullHandshake() error {
 	c := hs.c
 
-	if c.handshakeStatusAsync >= stateServerHandshakeDoFullHandshake2 {
-		return nil
-	}
-	c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2
-
-	if hs.clientHello.ocspStapling && len(hs.cert.OCSPStaple) > 0 {
-		hs.hello.ocspStapling = true
-	}
-
-	hs.hello.ticketSupported = hs.clientHello.ticketSupported && !c.config.SessionTicketsDisabled
-	hs.hello.cipherSuite = hs.suite.id
-
-	hs.finishedHash = newFinishedHash(hs.c.vers, hs.suite)
-	if c.config.ClientAuth == NoClientCert {
-		// No need to keep a full record of the handshake if client
-		// certificates won't be used.
-		hs.finishedHash.discardHandshakeBuffer()
-	}
-	hs.finishedHash.Write(hs.clientHello.marshal())
-	hs.finishedHash.Write(hs.hello.marshal())
-	if _, err := c.writeRecord(recordTypeHandshake, hs.hello.marshal()); err != nil {
-		return err
-	}
-
-	certMsg := new(certificateMsg)
-	certMsg.certificates = hs.cert.Certificate
-	hs.finishedHash.Write(certMsg.marshal())
-	if _, err := c.writeRecord(recordTypeHandshake, certMsg.marshal()); err != nil {
-		return err
-	}
-
-	if hs.hello.ocspStapling {
-		certStatus := new(certificateStatusMsg)
-		certStatus.response = hs.cert.OCSPStaple
-		hs.finishedHash.Write(certStatus.marshal())
-		if _, err := c.writeRecord(recordTypeHandshake, certStatus.marshal()); err != nil {
-			return err
-		}
-	}
-
-	keyAgreement := hs.suite.ka(c.vers)
-	skx, err := keyAgreement.generateServerKeyExchange(c.config, hs.cert, hs.clientHello, hs.hello)
-	if err != nil {
-		c.sendAlert(alertHandshakeFailure)
-		return err
-	}
-	if skx != nil {
-		hs.finishedHash.Write(skx.marshal())
-		if _, err := c.writeRecord(recordTypeHandshake, skx.marshal()); err != nil {
-			return err
-		}
-	}
-
-	var certReq *certificateRequestMsg
-	if c.config.ClientAuth >= RequestClientCert {
-		// Request a client certificate
-		certReq = new(certificateRequestMsg)
-		certReq.certificateTypes = []byte{
-			byte(certTypeRSASign),
-			byte(certTypeECDSASign),
-		}
-		if c.vers >= VersionTLS12 {
-			certReq.hasSignatureAlgorithm = true
-			certReq.supportedSignatureAlgorithms = supportedSignatureAlgorithms
-		}
-
-		// An empty list of certificateAuthorities signals to
-		// the client that it may send any certificate in response
-		// to our request. When we know the CAs we trust, then
-		// we can send them down, so that the client can choose
-		// an appropriate certificate to give to us.
-		if c.config.ClientCAs != nil {
-			certReq.certificateAuthorities = c.config.ClientCAs.Subjects()
-		}
-		hs.finishedHash.Write(certReq.marshal())
-		if _, err := c.writeRecord(recordTypeHandshake, certReq.marshal()); err != nil {
-			return err
-		}
-	}
-
-	helloDone := new(serverHelloDoneMsg)
-	hs.finishedHash.Write(helloDone.marshal())
-	if _, err := c.writeRecord(recordTypeHandshake, helloDone.marshal()); err != nil {
-		return err
-	}
-
-	if _, err := c.flush(); err != nil {
-		return err
-	}
-
+	var err error
+	var msg interface{}
 	var pub crypto.PublicKey // public key for client auth, if any
+	var certReq *certificateRequestMsg
+	if c.handshakeStatusAsync < stateServerHandshakeDoFullHandshake2 {
+		c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2
 
-	msg, err := c.readHandshake()
-	if err != nil {
-		return err
+		if hs.clientHello.ocspStapling && len(hs.cert.OCSPStaple) > 0 {
+			hs.hello.ocspStapling = true
+		}
+
+		hs.hello.ticketSupported = hs.clientHello.ticketSupported && !c.config.SessionTicketsDisabled
+		hs.hello.cipherSuite = hs.suite.id
+
+		hs.finishedHash = newFinishedHash(hs.c.vers, hs.suite)
+		if c.config.ClientAuth == NoClientCert {
+			// No need to keep a full record of the handshake if client
+			// certificates won't be used.
+			hs.finishedHash.discardHandshakeBuffer()
+		}
+		hs.finishedHash.Write(hs.clientHello.marshal())
+		hs.finishedHash.Write(hs.hello.marshal())
+		if _, err := c.writeRecord(recordTypeHandshake, hs.hello.marshal()); err != nil {
+			return err
+		}
+
+		certMsg := new(certificateMsg)
+		certMsg.certificates = hs.cert.Certificate
+		hs.finishedHash.Write(certMsg.marshal())
+		if _, err := c.writeRecord(recordTypeHandshake, certMsg.marshal()); err != nil {
+			return err
+		}
+
+		if hs.hello.ocspStapling {
+			certStatus := new(certificateStatusMsg)
+			certStatus.response = hs.cert.OCSPStaple
+			hs.finishedHash.Write(certStatus.marshal())
+			if _, err := c.writeRecord(recordTypeHandshake, certStatus.marshal()); err != nil {
+				return err
+			}
+		}
+
+		hs.ka = hs.suite.ka(c.vers)
+		skx, err := hs.ka.generateServerKeyExchange(c.config, hs.cert, hs.clientHello, hs.hello)
+		if err != nil {
+			c.sendAlert(alertHandshakeFailure)
+			return err
+		}
+		if skx != nil {
+			hs.finishedHash.Write(skx.marshal())
+			if _, err := c.writeRecord(recordTypeHandshake, skx.marshal()); err != nil {
+				return err
+			}
+		}
+
+		if c.config.ClientAuth >= RequestClientCert {
+			// Request a client certificate
+			certReq = new(certificateRequestMsg)
+			certReq.certificateTypes = []byte{
+				byte(certTypeRSASign),
+				byte(certTypeECDSASign),
+			}
+			if c.vers >= VersionTLS12 {
+				certReq.hasSignatureAlgorithm = true
+				certReq.supportedSignatureAlgorithms = supportedSignatureAlgorithms
+			}
+
+			// An empty list of certificateAuthorities signals to
+			// the client that it may send any certificate in response
+			// to our request. When we know the CAs we trust, then
+			// we can send them down, so that the client can choose
+			// an appropriate certificate to give to us.
+			if c.config.ClientCAs != nil {
+				certReq.certificateAuthorities = c.config.ClientCAs.Subjects()
+			}
+			hs.finishedHash.Write(certReq.marshal())
+			if _, err := c.writeRecord(recordTypeHandshake, certReq.marshal()); err != nil {
+				return err
+			}
+		}
+
+		helloDone := new(serverHelloDoneMsg)
+		hs.finishedHash.Write(helloDone.marshal())
+		if _, err := c.writeRecord(recordTypeHandshake, helloDone.marshal()); err != nil {
+			return err
+		}
+
+		if _, err := c.flush(); err != nil {
+			return err
+		}
+	}
+
+	if c.handshakeStatusAsync < stateServerHandshakeDoFullHandshake2ReadHandshake1 {
+		msg, err = c.readHandshake()
+		if err != nil {
+			if err != errDataNotEnough {
+				c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2ReadHandshake1
+			}
+			return err
+		}
+		c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2ReadHandshake1
 	}
 
 	// If we requested a client certificate, then the client must send a
 	// certificate message, even if it's empty.
+
 	if c.config.ClientAuth >= RequestClientCert {
-		certMsg, ok := msg.(*certificateMsg)
+		if c.handshakeStatusAsync < stateServerHandshakeDoFullHandshake2HandleCertificateMsg {
+			c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2HandleCertificateMsg
+
+			certMsg, ok := msg.(*certificateMsg)
+			if !ok {
+				c.sendAlert(alertUnexpectedMessage)
+				return unexpectedMessageError(certMsg, msg)
+			}
+			hs.finishedHash.Write(certMsg.marshal())
+
+			if err := c.processCertsFromClient(Certificate{
+				Certificate: certMsg.certificates,
+			}); err != nil {
+				return err
+			}
+			if len(certMsg.certificates) != 0 {
+				pub = c.peerCertificates[0].PublicKey
+			}
+		}
+		if c.handshakeStatusAsync < stateServerHandshakeDoFullHandshake2ReadHandshake2 {
+			msg, err = c.readHandshake()
+			if err != nil {
+				if err != errDataNotEnough {
+					c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2ReadHandshake2
+				}
+				return err
+			}
+			c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2ReadHandshake2
+
+		}
+	}
+
+	if c.handshakeStatusAsync < stateServerHandshakeDoFullHandshake2HandleVerifyConnection {
+		c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2HandleVerifyConnection
+		if c.config.VerifyConnection != nil {
+			if err := c.config.VerifyConnection(c.connectionStateLocked()); err != nil {
+				c.sendAlert(alertBadCertificate)
+				return err
+			}
+		}
+
+		// Get client key exchange
+		ckx, ok := msg.(*clientKeyExchangeMsg)
 		if !ok {
 			c.sendAlert(alertUnexpectedMessage)
-			return unexpectedMessageError(certMsg, msg)
+			return unexpectedMessageError(ckx, msg)
 		}
-		hs.finishedHash.Write(certMsg.marshal())
+		hs.finishedHash.Write(ckx.marshal())
 
-		if err := c.processCertsFromClient(Certificate{
-			Certificate: certMsg.certificates,
-		}); err != nil {
-			return err
-		}
-		if len(certMsg.certificates) != 0 {
-			pub = c.peerCertificates[0].PublicKey
-		}
-
-		msg, err = c.readHandshake()
+		preMasterSecret, err := hs.ka.processClientKeyExchange(c.config, hs.cert, ckx, c.vers)
 		if err != nil {
+			c.sendAlert(alertHandshakeFailure)
 			return err
 		}
-	}
-	if c.config.VerifyConnection != nil {
-		if err := c.config.VerifyConnection(c.connectionStateLocked()); err != nil {
-			c.sendAlert(alertBadCertificate)
+		hs.masterSecret = masterFromPreMasterSecret(c.vers, hs.suite, preMasterSecret, hs.clientHello.random, hs.hello.random)
+		if err := c.config.writeKeyLog(keyLogLabelTLS12, hs.clientHello.random, hs.masterSecret); err != nil {
+			c.sendAlert(alertInternalError)
 			return err
 		}
+
 	}
 
-	// Get client key exchange
-	ckx, ok := msg.(*clientKeyExchangeMsg)
-	if !ok {
-		c.sendAlert(alertUnexpectedMessage)
-		return unexpectedMessageError(ckx, msg)
+	if c.handshakeStatusAsync >= stateServerHandshakeDoFullHandshake2ReadHandshake3 {
+		return nil
 	}
-	hs.finishedHash.Write(ckx.marshal())
-
-	preMasterSecret, err := keyAgreement.processClientKeyExchange(c.config, hs.cert, ckx, c.vers)
-	if err != nil {
-		c.sendAlert(alertHandshakeFailure)
-		return err
-	}
-	hs.masterSecret = masterFromPreMasterSecret(c.vers, hs.suite, preMasterSecret, hs.clientHello.random, hs.hello.random)
-	if err := c.config.writeKeyLog(keyLogLabelTLS12, hs.clientHello.random, hs.masterSecret); err != nil {
-		c.sendAlert(alertInternalError)
-		return err
-	}
-
 	// If we received a client cert in response to our certificate request message,
 	// the client will send us a certificateVerifyMsg immediately after the
 	// clientKeyExchangeMsg. This message is a digest of all preceding
@@ -715,13 +749,17 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 	// to the client's certificate. This allows us to verify that the client is in
 	// possession of the private key of the certificate.
 	if len(c.peerCertificates) > 0 {
-		msg, err = c.readHandshake()
+		msg, err := c.readHandshake()
 		if err != nil {
+			if err != errDataNotEnough {
+				c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2ReadHandshake3
+			}
 			return err
 		}
 		certVerify, ok := msg.(*certificateVerifyMsg)
 		if !ok {
 			c.sendAlert(alertUnexpectedMessage)
+			c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2ReadHandshake3
 			return unexpectedMessageError(certVerify, msg)
 		}
 
@@ -730,16 +768,19 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 		if c.vers >= VersionTLS12 {
 			if !isSupportedSignatureAlgorithm(certVerify.signatureAlgorithm, certReq.supportedSignatureAlgorithms) {
 				c.sendAlert(alertIllegalParameter)
+				c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2ReadHandshake3
 				return errors.New("tls: client certificate used with invalid signature algorithm")
 			}
 			sigType, sigHash, err = typeAndHashFromSignatureScheme(certVerify.signatureAlgorithm)
 			if err != nil {
+				c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2ReadHandshake3
 				return c.sendAlert(alertInternalError)
 			}
 		} else {
 			sigType, sigHash, err = legacyTypeAndHashFromPublicKey(pub)
 			if err != nil {
 				c.sendAlert(alertIllegalParameter)
+				c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2ReadHandshake3
 				return err
 			}
 		}
@@ -747,6 +788,7 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 		signed := hs.finishedHash.hashForClientCertificate(sigType, sigHash, hs.masterSecret)
 		if err := verifyHandshakeSignature(sigType, pub, sigHash, signed, certVerify.signature); err != nil {
 			c.sendAlert(alertDecryptError)
+			c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2ReadHandshake3
 			return errors.New("tls: invalid signature by the client certificate: " + err.Error())
 		}
 
@@ -755,21 +797,17 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 
 	hs.finishedHash.discardHandshakeBuffer()
 
+	c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2ReadHandshake3
+
 	return nil
 }
 
 func (hs *serverHandshakeState) establishKeys() error {
 	c := hs.c
-
 	if c.handshakeStatusAsync >= stateServerHandshakeEstablishKeys2 {
 		return nil
 	}
 	c.handshakeStatusAsync = stateServerHandshakeEstablishKeys2
-
-	if c.handshakeStatusAsync >= stateServerHandshakeEstablishKeys {
-		return nil
-	}
-	c.handshakeStatusAsync = stateServerHandshakeEstablishKeys
 
 	clientMAC, serverMAC, clientKey, serverKey, clientIV, serverIV :=
 		keysFromMasterSecret(c.vers, hs.suite, hs.masterSecret, hs.clientHello.random, hs.hello.random, hs.suite.macLen, hs.suite.keyLen, hs.suite.ivLen)
@@ -789,16 +827,11 @@ func (hs *serverHandshakeState) establishKeys() error {
 
 	c.in.prepareCipherSpec(c.vers, clientCipher, clientHash)
 	c.out.prepareCipherSpec(c.vers, serverCipher, serverHash)
-
 	return nil
 }
 
 func (hs *serverHandshakeState) readFinished(out []byte) error {
 	c := hs.c
-
-	if c.handshakeStatusAsync >= stateServerHandshakeReadFinishedDone {
-		return nil
-	}
 
 	if c.handshakeStatusAsync < stateServerHandshakeReadFinishedReadChangeCipherSpec {
 		if err := c.readChangeCipherSpec(); err != nil {
@@ -807,8 +840,12 @@ func (hs *serverHandshakeState) readFinished(out []byte) error {
 			}
 			return err
 		}
+		c.handshakeStatusAsync = stateServerHandshakeReadFinishedReadChangeCipherSpec
 	}
 
+	if c.handshakeStatusAsync >= stateServerHandshakeReadFinishedDone {
+		return nil
+	}
 	msg, err := c.readHandshake()
 	if err != nil {
 		if err != errDataNotEnough {
@@ -835,7 +872,6 @@ func (hs *serverHandshakeState) readFinished(out []byte) error {
 	copy(out, verify)
 
 	c.handshakeStatusAsync = stateServerHandshakeReadFinishedDone
-
 	return nil
 }
 
