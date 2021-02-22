@@ -4,7 +4,7 @@
 
 [1]: https://godoc.org/github.com/lesismal/llib?status.svg
 [2]: https://godoc.org/github.com/lesismal/llib
-[3]: https://img.shields.io/badge/license-MIT-blue.svg
+[3]: https://img.shields.io/badge/license-BSD-blue.svg
 [4]: LICENSE
 [5]: https://img.shields.io/badge/go-%3E%3D1.16-30dff3?style=flat-square&logo=go
 [6]: https://github.com/lesismal/llib
