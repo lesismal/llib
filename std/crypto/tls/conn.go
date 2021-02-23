@@ -142,14 +142,16 @@ func (c *Conn) Conn() net.Conn {
 }
 
 // ResetConn resets conn
-func (c *Conn) ResetConn(conn net.Conn, readBufferSize int) {
+func (c *Conn) ResetConn(conn net.Conn, nonBlock bool, readBufferSize int) {
 	c.conn = conn
-	c.isNonBlock = true
-	if readBufferSize <= 0 {
-		readBufferSize = defaultReadBufferSize
-	}
-	if len(c.ReadBuffer) < readBufferSize {
-		c.ReadBuffer = append(c.ReadBuffer, make([]byte, readBufferSize-len(c.ReadBuffer))...)
+	c.isNonBlock = nonBlock
+	if nonBlock {
+		if readBufferSize <= 0 {
+			readBufferSize = defaultReadBufferSize
+		}
+		if len(c.ReadBuffer) < readBufferSize {
+			c.ReadBuffer = append(c.ReadBuffer, make([]byte, readBufferSize-len(c.ReadBuffer))...)
+		}
 	}
 }
 
