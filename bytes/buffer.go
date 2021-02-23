@@ -39,6 +39,9 @@ func (bb *Buffer) Pop(n int) ([]byte, error) {
 	if bb.total < n {
 		return nil, ErrNotEnougth
 	}
+
+	bb.total -= n
+
 	var buf = bb.buffers[0]
 	if len(buf) >= n {
 		ret := buf[:n]
