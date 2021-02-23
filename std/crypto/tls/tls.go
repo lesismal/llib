@@ -45,7 +45,7 @@ func NewConn(conn net.Conn, config *Config, isClient bool, isNonBlock bool, read
 	}
 	if isNonBlock {
 		if readBufferSize <= 0 {
-			readBufferSize = 4096
+			readBufferSize = defaultReadBufferSize
 		}
 		c.ReadBuffer = make([]byte, readBufferSize)
 	}
