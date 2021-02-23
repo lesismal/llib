@@ -144,6 +144,7 @@ func (c *Conn) Conn() net.Conn {
 // ResetConn resets conn
 func (c *Conn) ResetConn(conn net.Conn, readBufferSize int) {
 	c.conn = conn
+	c.isNonBlock = true
 	if readBufferSize <= 0 {
 		readBufferSize = defaultReadBufferSize
 	}
