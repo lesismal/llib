@@ -2,7 +2,6 @@ package bytes
 
 import (
 	"errors"
-	"log"
 )
 
 var (
@@ -80,8 +79,6 @@ func (hb *HTTPBuffer) ReadURL() (host string, path string, version string, code 
 	hb.crPos = hb.crPos[1:]
 	hb.lfPos = hb.lfPos[1:]
 
-	log.Printf("After ReadURL: [%v]", string(hb.buffers[0]))
-
 	return
 }
 
@@ -95,7 +92,7 @@ func (hb *HTTPBuffer) ReadHeader() (headKey string, headValue string, ok bool, e
 		err = errInvalidData
 		return
 	}
-	if hb.crPos[0] == 0 {
+	if hb.crPos[0]-hb.offset == 0 {
 		hb.Pop(2)
 		hb.offset += 2
 		ok = false
