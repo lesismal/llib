@@ -22,7 +22,7 @@ func TestHTTPBuffer(t *testing.T) {
 		"Accept-Encoding": "gzip",
 	}
 	for {
-		key, value, ok, err := hb.ReadHeader()
+		key, value, ok, err := hb.ReadHeader(len(ret) == 4)
 		if err != nil {
 			t.Fatal(err)
 		}
