@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/textproto"
 	"strings"
 
 	"github.com/golang/net/http/httpguts"
@@ -128,7 +129,7 @@ func (hb *HTTPBuffer) ReadResponseLine() (method string, requestURI string, prot
 }
 
 // ReadHeader .
-func (hb *HTTPBuffer) ReadHeader() (headKey string, headValue string, ok bool, err error) {
+func (hb *HTTPBuffer) ReadHeader(isFirstLine bool) (headKey string, headValue string, ok bool, err error) {
 	if len(hb.crPos) < 1 || len(hb.lfPos) < 1 {
 		err = ErrDataNotEnouth
 		return
@@ -152,6 +153,12 @@ func (hb *HTTPBuffer) ReadHeader() (headKey string, headValue string, ok bool, e
 	var bKey, bValue []byte
 	l := hb.colPos[0] - hb.offset + 1
 	bKey, err = hb.Pop(l)
+	// The first line cannot start with a leading space.
+	if bKey[0] == ' ' || bKey[0] == '\t' {
+		err = textproto.ProtocolError("malformed MIME header initial line head key: " + string(bKey))
+		return
+	}
+
 	bKey = bKey[:l-1]
 	hb.offset += l
 	l = hb.crPos[0] - hb.colPos[0] + 1
@@ -192,11 +199,6 @@ func (hb *HTTPBuffer) ReadHeader() (headKey string, headValue string, ok bool, e
 
 	ok = true
 
-	// if len(hb.buffers) > 0 {
-	// 	log.Printf("After ReadHeader: [%v]", string(hb.buffers[0]))
-	// } else {
-	// 	log.Printf("After ReadHeader: [null]")
-	// }
 	return
 }
 
