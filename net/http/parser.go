@@ -47,7 +47,10 @@ func (p *Parser) ReadRequest() (*http.Request, bool, error) {
 		switch p.state {
 		case StateURL:
 			method, requestURI, proto, err := p.buffer.ReadRequestLine()
-			if err != nil && err != ErrDataNotEnouth {
+			if err == ErrDataNotEnouth {
+				return nil, false, nil
+			}
+			if err != nil {
 				return nil, false, err
 			}
 
@@ -87,7 +90,10 @@ func (p *Parser) ReadRequest() (*http.Request, bool, error) {
 		case StateHeader:
 			for {
 				key, value, ok, err := p.buffer.ReadHeader()
-				if err != nil && err != ErrDataNotEnouth {
+				if err == ErrDataNotEnouth {
+					return nil, false, nil
+				}
+				if err != nil {
 					return nil, false, err
 				}
 				if ok {
@@ -110,7 +116,10 @@ func (p *Parser) ReadResponse() (*http.Response, bool, error) {
 		switch p.state {
 		case StateURL:
 			method, requestURI, proto, status, err := p.buffer.ReadResponseLine()
-			if err != nil && err != ErrDataNotEnouth {
+			if err == ErrDataNotEnouth {
+				return nil, false, nil
+			}
+			if err != nil {
 				return nil, false, err
 			}
 			request := &http.Request{}
@@ -137,7 +146,10 @@ func (p *Parser) ReadResponse() (*http.Response, bool, error) {
 		case StateHeader:
 			for {
 				key, value, ok, err := p.buffer.ReadHeader()
-				if err != nil && err != ErrDataNotEnouth {
+				if err == ErrDataNotEnouth {
+					return nil, false, nil
+				}
+				if err != nil {
 					return nil, false, err
 				}
 				if ok {
