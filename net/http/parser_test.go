@@ -10,8 +10,18 @@ func TestParser(t *testing.T) {
 
 	parser := New()
 
-	parser.Append(requestData)
+	for i := 0; i < len(requestData)-6; i++ {
+		parser.Append(requestData[i : i+1])
+		_, ok, err := parser.ReadRequest()
+		if err != nil {
+			t.Fatalf("ReadRequest failed: %v", err)
+		}
+		if ok {
+			t.Fatalf("ReadRequest failed: %v", err)
+		}
+	}
 
+	parser.Append(requestData[len(requestData)-6:])
 	request, ok, err := parser.ReadRequest()
 	if ok {
 		log.Printf("ReadRequest success error: %v, %v, %v, %v, %+v", err, request.Method, request.URL.Path, request.Proto, request.Header)
