@@ -1,12 +1,18 @@
 package bytes
 
 import (
+	"bytes"
 	"errors"
+	"strings"
+
+	"github.com/golang/net/http/httpguts"
 )
 
 var (
-	errDataNotEnouth = errors.New("data not enougth")
-	errInvalidData   = errors.New("invalid data")
+	// ErrDataNotEnouth .
+	ErrDataNotEnouth = errors.New("data not enougth")
+	// ErrInvalidData .
+	ErrInvalidData = errors.New("invalid data")
 )
 
 const (
@@ -16,15 +22,8 @@ const (
 	LF = '\n'
 	// COL .
 	COL = ':'
-)
-
-const (
-	// LineTypeHost .
-	LineTypeHost = 1
-	// LineTypeHeader .
-	LineTypeHeader = 2
-	// LineTypeBody .
-	LineTypeBody = 3
+	// SPA .
+	SPA = ' '
 )
 
 // HTTPBuffer .
@@ -60,36 +59,70 @@ func (hb *HTTPBuffer) Push(b []byte) {
 	hb.Buffer.Push(b)
 }
 
-// ReadURL .
-func (hb *HTTPBuffer) ReadURL() (host string, path string, version string, code string, err error) {
+// ReadRequestLine .
+func (hb *HTTPBuffer) ReadRequestLine() (method string, requestURI string, proto string, err error) {
 	if len(hb.crPos) < 1 || len(hb.lfPos) < 1 {
-		err = errDataNotEnouth
+		err = ErrDataNotEnouth
 		return
 	}
 	if hb.crPos[0]+1 != hb.lfPos[0] {
-		err = errInvalidData
+		err = ErrInvalidData
+		return
+	}
+
+	l := hb.lfPos[0] - hb.offset + 1
+	data, _ := hb.Pop(l)
+	data = data[:len(data)-2]
+	hb.offset += l
+
+	hb.crPos = hb.crPos[1:]
+	hb.lfPos = hb.lfPos[1:]
+
+	method, requestURI, proto, ok := parseRequestLine(data)
+	if !ok {
+		err = ErrInvalidData
+	}
+
+	return
+}
+
+// ReadResponseLine .
+func (hb *HTTPBuffer) ReadResponseLine() (method string, requestURI string, proto string, status string, err error) {
+	if len(hb.crPos) < 1 || len(hb.lfPos) < 1 {
+		err = ErrDataNotEnouth
+		return
+	}
+	if hb.crPos[0]+1 != hb.lfPos[0] {
+		err = ErrInvalidData
 		return
 	}
 
 	l := hb.lfPos[0] + 1 - hb.offset
-	hb.Pop(l)
+	data, _ := hb.Pop(l)
 
 	hb.offset += l
 
 	hb.crPos = hb.crPos[1:]
 	hb.lfPos = hb.lfPos[1:]
 
+	strArr := strings.Split(string(data), " ")
+	switch len(strArr) {
+	case 4:
+		method, requestURI, proto, status = strArr[0], strArr[1], strArr[2], strArr[3]
+	default:
+		err = ErrInvalidData
+	}
 	return
 }
 
 // ReadHeader .
 func (hb *HTTPBuffer) ReadHeader() (headKey string, headValue string, ok bool, err error) {
 	if len(hb.crPos) < 1 || len(hb.lfPos) < 1 {
-		err = errDataNotEnouth
+		err = ErrDataNotEnouth
 		return
 	}
 	if hb.crPos[0]+1 != hb.lfPos[0] {
-		err = errInvalidData
+		err = ErrInvalidData
 		return
 	}
 	if hb.crPos[0]-hb.offset == 0 {
@@ -100,23 +133,19 @@ func (hb *HTTPBuffer) ReadHeader() (headKey string, headValue string, ok bool, e
 	}
 
 	if len(hb.colPos) == 0 {
-		err = errInvalidData
+		err = ErrInvalidData
 		return
 	}
 
-	// log.Printf("Before ReadHeader: [%v]", string(hb.buffers[0]))
-
 	var bKey, bValue []byte
-	l := hb.colPos[0] - hb.offset
+	l := hb.colPos[0] - hb.offset + 1
 	bKey, err = hb.Pop(l)
-	// log.Printf("--- bKey: [%v] [%v]", string(bKey), len(bKey))
-	hb.Pop(1)
-	hb.offset += (l + 1)
-	l = hb.crPos[0] - hb.colPos[0] - 1
+	bKey = bKey[:l-1]
+	hb.offset += l
+	l = hb.crPos[0] - hb.colPos[0] + 1
 	bValue, err = hb.Pop(l)
-	// log.Printf("--- bValue: [%v] [%v] [%v] [%v] [%v]", string(bValue), hb.crPos[0], hb.colPos[0], hb.offset, l)
-	hb.Pop(2)
-	hb.offset += (l + 2)
+	bValue = bValue[:l-2]
+	hb.offset += l
 
 	for i := 0; i < len(bKey); i++ {
 		if bKey[i] != ' ' {
@@ -166,4 +195,35 @@ func NewHTTPBuffer() *HTTPBuffer {
 		lfPos:  make([]int, 32)[0:0],
 		colPos: make([]int, 32)[0:0],
 	}
+}
+
+func isNotToken(r rune) bool {
+	return !httpguts.IsTokenRune(r)
+}
+
+func validMethod(method string) bool {
+	/*
+	     Method         = "OPTIONS"                ; Section 9.2
+	                    | "GET"                    ; Section 9.3
+	                    | "HEAD"                   ; Section 9.4
+	                    | "POST"                   ; Section 9.5
+	                    | "PUT"                    ; Section 9.6
+	                    | "DELETE"                 ; Section 9.7
+	                    | "TRACE"                  ; Section 9.8
+	                    | "CONNECT"                ; Section 9.9
+	                    | extension-method
+	   extension-method = token
+	     token          = 1*<any CHAR except CTLs or separators>
+	*/
+	return len(method) > 0 && strings.IndexFunc(method, isNotToken) == -1
+}
+
+func parseRequestLine(line []byte) (method, requestURI, proto string, ok bool) {
+	s1 := bytes.IndexByte(line, SPA)
+	s2 := bytes.IndexByte(line[s1+1:], SPA)
+	if s1 < 0 || s2 < 0 {
+		return
+	}
+	s2 += s1 + 1
+	return string(line[:s1]), string(line[s1+1 : s2]), string(line[s2+1:]), true
 }
