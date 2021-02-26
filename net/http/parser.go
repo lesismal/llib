@@ -4,8 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-
-	"github.com/lesismal/llib/bytes"
+	"strings"
 )
 
 const (
@@ -31,7 +30,7 @@ const (
 // Parser .
 type Parser struct {
 	state    int
-	buffer   *bytes.HTTPBuffer
+	buffer   *HTTPBuffer
 	request  *http.Request
 	response *http.Response
 	appendfn func(buf []byte)
@@ -47,26 +46,48 @@ func (p *Parser) ReadRequest() (*http.Request, bool, error) {
 	for {
 		switch p.state {
 		case StateURL:
-			method, path, proto, err := p.buffer.ReadRequestLine()
-			if err != nil && err != bytes.ErrDataNotEnouth {
+			method, requestURI, proto, err := p.buffer.ReadRequestLine()
+			if err != nil && err != ErrDataNotEnouth {
 				return nil, false, err
 			}
-			if p.request == nil {
-				p.request = &http.Request{Header: http.Header{}}
+
+			protoMajor, protoMinor, ok := http.ParseHTTPVersion(proto)
+			if !ok {
+				return nil, false, badStringError("malformed HTTP version", proto)
 			}
-			p.request.Method = method
-			url, err := url.Parse(path)
+
+			rawurl := requestURI
+			justAuthority := method == "CONNECT" && !strings.HasPrefix(rawurl, "/")
+			if justAuthority {
+				rawurl = "http://" + rawurl
+			}
+
+			u, err := url.ParseRequestURI(rawurl)
 			if err != nil {
 				return nil, false, err
 			}
-			p.request.URL = url
+
+			if justAuthority {
+				u.Scheme = ""
+			}
+
+			if p.request == nil {
+				p.request = &http.Request{
+					URL:    u,
+					Header: http.Header{},
+				}
+			}
+
+			p.request.Method = method
 			p.request.Proto = proto
+			p.request.ProtoMajor = protoMajor
+			p.request.ProtoMinor = protoMinor
 
 			p.state = StateHeader
 		case StateHeader:
 			for {
 				key, value, ok, err := p.buffer.ReadHeader()
-				if err != nil && err != bytes.ErrDataNotEnouth {
+				if err != nil && err != ErrDataNotEnouth {
 					return nil, false, err
 				}
 				if ok {
@@ -89,7 +110,7 @@ func (p *Parser) ReadResponse() (*http.Response, bool, error) {
 		switch p.state {
 		case StateURL:
 			method, requestURI, proto, status, err := p.buffer.ReadResponseLine()
-			if err != nil && err != bytes.ErrDataNotEnouth {
+			if err != nil && err != ErrDataNotEnouth {
 				return nil, false, err
 			}
 			request := &http.Request{}
@@ -116,7 +137,7 @@ func (p *Parser) ReadResponse() (*http.Response, bool, error) {
 		case StateHeader:
 			for {
 				key, value, ok, err := p.buffer.ReadHeader()
-				if err != nil && err != bytes.ErrDataNotEnouth {
+				if err != nil && err != ErrDataNotEnouth {
 					return nil, false, err
 				}
 				if ok {
@@ -135,7 +156,7 @@ func (p *Parser) ReadResponse() (*http.Response, bool, error) {
 
 // New .
 func New() *Parser {
-	hb := bytes.NewHTTPBuffer()
+	hb := NewHTTPBuffer()
 	return &Parser{
 		buffer:   hb,
 		appendfn: hb.Push,
