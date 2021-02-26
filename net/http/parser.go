@@ -3,7 +3,6 @@ package parser
 import (
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 )
 
@@ -89,7 +88,7 @@ func (p *Parser) ReadRequest() (*http.Request, bool, error) {
 			p.state = StateHeader
 		case StateHeader:
 			for {
-				key, value, ok, err := p.buffer.ReadHeader()
+				key, value, ok, err := p.buffer.ReadHeader(len(p.request.Header) == 0)
 				if err == ErrDataNotEnouth {
 					return nil, false, nil
 				}
@@ -110,61 +109,61 @@ func (p *Parser) ReadRequest() (*http.Request, bool, error) {
 	}
 }
 
-// ReadResponse .
-func (p *Parser) ReadResponse() (*http.Response, bool, error) {
-	for {
-		switch p.state {
-		case StateURL:
-			method, requestURI, proto, status, err := p.buffer.ReadResponseLine()
-			if err == ErrDataNotEnouth {
-				return nil, false, nil
-			}
-			if err != nil {
-				return nil, false, err
-			}
-			request := &http.Request{}
-			response := &http.Response{
-				Request: request,
-			}
+// // ReadResponse .
+// func (p *Parser) ReadResponse() (*http.Response, bool, error) {
+// 	for {
+// 		switch p.state {
+// 		case StateURL:
+// 			method, requestURI, proto, status, err := p.buffer.ReadResponseLine()
+// 			if err == ErrDataNotEnouth {
+// 				return nil, false, nil
+// 			}
+// 			if err != nil {
+// 				return nil, false, err
+// 			}
+// 			request := &http.Request{}
+// 			response := &http.Response{
+// 				Request: request,
+// 			}
 
-			response.StatusCode, err = strconv.Atoi(status)
-			if err != nil {
-				return nil, false, err
-			}
-			url, err := url.Parse(requestURI)
-			if err != nil {
-				return nil, false, err
-			}
+// 			response.StatusCode, err = strconv.Atoi(status)
+// 			if err != nil {
+// 				return nil, false, err
+// 			}
+// 			url, err := url.Parse(requestURI)
+// 			if err != nil {
+// 				return nil, false, err
+// 			}
 
-			request.URL = url
-			request.Method = method
-			request.Proto = proto
-			response.Proto = proto
-			response.Status = status
+// 			request.URL = url
+// 			request.Method = method
+// 			request.Proto = proto
+// 			response.Proto = proto
+// 			response.Status = status
 
-			p.state = StateHeader
-		case StateHeader:
-			for {
-				key, value, ok, err := p.buffer.ReadHeader()
-				if err == ErrDataNotEnouth {
-					return nil, false, nil
-				}
-				if err != nil {
-					return nil, false, err
-				}
-				if ok {
-					p.response.Request.Header.Add(key, value)
-				} else {
-					p.state = StateBody
-					break
-				}
-			}
-		case StateBody:
-			p.state = StateURL
-			return p.response, true, nil
-		}
-	}
-}
+// 			p.state = StateHeader
+// 		case StateHeader:
+// 			for {
+// 				key, value, ok, err := p.buffer.ReadHeader(len(p.request.Header) == 0)
+// 				if err == ErrDataNotEnouth {
+// 					return nil, false, nil
+// 				}
+// 				if err != nil {
+// 					return nil, false, err
+// 				}
+// 				if ok {
+// 					p.response.Request.Header.Add(key, value)
+// 				} else {
+// 					p.state = StateBody
+// 					break
+// 				}
+// 			}
+// 		case StateBody:
+// 			p.state = StateURL
+// 			return p.response, true, nil
+// 		}
+// 	}
+// }
 
 // New .
 func New() *Parser {
