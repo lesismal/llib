@@ -13,7 +13,7 @@ func TestHTTPBuffer(t *testing.T) {
 	hb.Push(requestData)
 	// to do
 	// host, path, version, code, err := hb.ReadURL()
-	hb.ReadURL()
+	hb.ReadRequestLine()
 
 	ret := map[string]string{
 		"Host":            "localhost:8080",
@@ -36,6 +36,5 @@ func TestHTTPBuffer(t *testing.T) {
 		} else {
 			break
 		}
-
 	}
 }
