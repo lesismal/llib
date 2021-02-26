@@ -74,6 +74,10 @@ func (hb *HTTPBuffer) ReadRequestLine() (method string, requestURI string, proto
 
 	l := hb.lfPos[0] - hb.offset + 1
 	data, _ := hb.Pop(l)
+	if len(data) < 16 {
+		err = ErrInvalidData
+		return
+	}
 	data = data[:len(data)-2]
 	hb.offset += l
 
