@@ -17,9 +17,12 @@ type Parser struct {
 	request  *http.Request
 	appendfn func(buf []byte)
 
-	crPos  int
-	lfPos  int
-	colPos int
+	crPos         int
+	lfPos         int
+	colPos        int
+	chunked       bool
+	contentLength int64
+	trailer       http.Header
 }
 
 // Append .
@@ -160,6 +163,73 @@ func (p *Parser) ReadHeader(data []byte) (*http.Request, bool, error) {
 				// err = readTransfer(req, b)
 				// if err != nil {
 				// 	return nil, err
+				// }
+				chunked, err := parseTransferEncoding(p.request)
+				if err != nil {
+					return nil, false, err
+				}
+				p.chunked = chunked
+
+				if p.request.Method == "HEAD" {
+					p.request.ContentLength, err = parseContentLength(p.request.Header.Get("Content-Length"))
+					if err != nil {
+						return nil, false, err
+					}
+				} else {
+					p.request.ContentLength, err = fixLength(false, 200, p.request.Method, p.request.Header, chunked)
+					if err != nil {
+						return nil, false, err
+					}
+				}
+
+				// Trailer
+				p.trailer, err = fixTrailer(p.request.Header, p.chunked)
+				if err != nil {
+					return nil, false, err
+				}
+
+				// Prepare body reader. ContentLength < 0 means chunked encoding
+				// or close connection when finished, since multipart is not supported yet
+				// switch {
+				// case t.Chunked:
+				// 	if noResponseBodyExpected(t.RequestMethod) || !bodyAllowedForStatus(t.StatusCode) {
+				// 		t.Body = NoBody
+				// 	} else {
+				// 		t.Body = &body{src: internal.NewChunkedReader(r), hdr: msg, r: r, closing: t.Close}
+				// 	}
+				// case realLength == 0:
+				// 	t.Body = NoBody
+				// case realLength > 0:
+				// 	t.Body = &body{src: io.LimitReader(r, realLength), closing: t.Close}
+				// default:
+				// 	// realLength < 0, i.e. "Content-Length" not mentioned in header
+				// 	if t.Close {
+				// 		// Close semantics (i.e. HTTP/1.0)
+				// 		t.Body = &body{src: r, closing: t.Close}
+				// 	} else {
+				// 		// Persistent connection (i.e. HTTP/1.1)
+				// 		t.Body = NoBody
+				// 	}
+				// }
+
+				// // Unify output
+				// switch rr := msg.(type) {
+				// case *Request:
+				// 	rr.Body = t.Body
+				// 	rr.ContentLength = t.ContentLength
+				// 	if t.Chunked {
+				// 		rr.TransferEncoding = []string{"chunked"}
+				// 	}
+				// 	rr.Close = t.Close
+				// 	rr.Trailer = t.Trailer
+				// case *Response:
+				// 	rr.Body = t.Body
+				// 	rr.ContentLength = t.ContentLength
+				// 	if t.Chunked {
+				// 		rr.TransferEncoding = []string{"chunked"}
+				// 	}
+				// 	rr.Close = t.Close
+				// 	rr.Trailer = t.Trailer
 				// }
 
 				// todo
