@@ -373,9 +373,11 @@ func (p *Parser) ReadHeader(data []byte) (*http.Request, bool, error) {
 // ReadBody .
 func (p *Parser) ReadBody(data []byte) (*http.Request, bool, error) {
 	p.resetPos()
+	p.buffer.Reset()
+	p.state = StateURL
+
 	request := p.request
 	p.request = nil
-	p.state = StateURL
 	return request, true, nil
 }
 
