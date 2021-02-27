@@ -1,38 +1,26 @@
 package parser
 
 import (
+	"bytes"
+	"fmt"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
-)
 
-const (
-	// StateURL .
-	StateURL = 0
-
-	// StateHeader .
-	StateHeader = 1
-
-	// StateBody .
-	StateBody = 2
-)
-
-const (
-	// LineTypeURL .
-	LineTypeURL = 1
-	// LineTypeHeader .
-	LineTypeHeader = 2
-	// LineTypeBody .
-	LineTypeBody = 3
+	lbytes "github.com/lesismal/llib/bytes"
 )
 
 // Parser .
 type Parser struct {
 	state    int
-	buffer   *HTTPBuffer
+	buffer   *lbytes.Buffer
 	request  *http.Request
-	response *http.Response
 	appendfn func(buf []byte)
+
+	crPos  int
+	lfPos  int
+	colPos int
 }
 
 // Append .
@@ -40,17 +28,50 @@ func (p *Parser) Append(buf []byte) {
 	p.appendfn(buf)
 }
 
-// ReadRequest .
-func (p *Parser) ReadRequest() (*http.Request, bool, error) {
-	for {
-		switch p.state {
-		case StateURL:
-			method, requestURI, proto, err := p.buffer.ReadRequestLine()
-			if err == ErrDataNotEnouth {
-				return nil, false, nil
+func (p *Parser) resetPos() {
+	p.crPos = -1
+	p.lfPos = -1
+	p.colPos = -1
+}
+
+// ReadRequestLine .
+func (p *Parser) ReadRequestLine(data []byte) (*http.Request, bool, error) {
+	var c byte
+	var offset = p.buffer.Len()
+	for i := 0; i < len(data); i++ {
+		c = data[i]
+		switch c {
+		case CR:
+			if p.crPos > 0 || offset+i < 16 {
+				return nil, false, ErrInvalidData
 			}
-			if err != nil {
-				return nil, false, err
+			if p.crPos < 0 {
+				p.crPos = offset + i
+			}
+		case LF:
+			if p.crPos != offset+i-1 {
+				return nil, false, ErrInvalidData
+			}
+			if p.lfPos < 0 {
+				p.lfPos = offset + i
+			}
+
+			var b []byte
+			if offset == 0 {
+				b = data[:i]
+			} else {
+				p.Append(data[0:i])
+				b, _ = p.buffer.ReadAll()
+				b = b[:len(b)-1]
+			}
+			method, requestURI, proto, ok := parseRequestLine(b)
+
+			if !ok {
+				return nil, false, badStringError("malformed HTTP request", string(data))
+			}
+
+			if !validMethod(method) {
+				return nil, false, badStringError("invalid method", method)
 			}
 
 			protoMajor, protoMinor, ok := http.ParseHTTPVersion(proto)
@@ -86,90 +107,121 @@ func (p *Parser) ReadRequest() (*http.Request, bool, error) {
 			p.request.ProtoMinor = protoMinor
 
 			p.state = StateHeader
-		case StateHeader:
-			for {
-				key, value, ok, err := p.buffer.ReadHeader(len(p.request.Header) == 0)
-				if err == ErrDataNotEnouth {
-					return nil, false, nil
-				}
-				if err != nil {
-					return nil, false, err
-				}
-				if ok {
-					p.request.Header.Add(key, value)
-				} else {
-					p.state = StateBody
-					break
-				}
-			}
-		case StateBody:
-			p.state = StateURL
-			return p.request, true, nil
+			p.resetPos()
+
+			return p.ReadHeader(data[i+1:])
+		case COL:
+			// if p.colPos < 0 {
+			// 	p.colPos = i
+			// }
+			fmt.Println("+++ ReadRequestLine char:", c)
+		default:
 		}
 	}
+	p.Append(data)
+	return nil, false, nil
 }
 
-// // ReadResponse .
-// func (p *Parser) ReadResponse() (*http.Response, bool, error) {
-// 	for {
-// 		switch p.state {
-// 		case StateURL:
-// 			method, requestURI, proto, status, err := p.buffer.ReadResponseLine()
-// 			if err == ErrDataNotEnouth {
-// 				return nil, false, nil
-// 			}
-// 			if err != nil {
-// 				return nil, false, err
-// 			}
-// 			request := &http.Request{}
-// 			response := &http.Response{
-// 				Request: request,
-// 			}
+// ReadHeader .
+func (p *Parser) ReadHeader(data []byte) (*http.Request, bool, error) {
+	var c byte
+	var offset = p.buffer.Len()
+	for i := 0; i < len(data); i++ {
+		c = data[i]
+		switch c {
+		case CR:
+			if p.crPos > 0 {
+				return nil, false, ErrInvalidData
+			}
+			if p.crPos < 0 {
+				p.crPos = offset + i
+			}
+		case LF:
+			if p.crPos < 0 || p.crPos != offset+i-1 {
+				return nil, false, ErrInvalidData
+			}
 
-// 			response.StatusCode, err = strconv.Atoi(status)
-// 			if err != nil {
-// 				return nil, false, err
-// 			}
-// 			url, err := url.Parse(requestURI)
-// 			if err != nil {
-// 				return nil, false, err
-// 			}
+			if p.crPos == 0 {
+				p.state = StateBody
+				p.resetPos()
+				return p.ReadBody(data[i+1:])
+			}
 
-// 			request.URL = url
-// 			request.Method = method
-// 			request.Proto = proto
-// 			response.Proto = proto
-// 			response.Status = status
+			if p.lfPos > 0 {
+				p.lfPos = offset + i
+			}
+			p.lfPos = offset + i
+			if p.lfPos < 16 {
+				return nil, false, ErrInvalidData
+			}
 
-// 			p.state = StateHeader
-// 		case StateHeader:
-// 			for {
-// 				key, value, ok, err := p.buffer.ReadHeader(len(p.request.Header) == 0)
-// 				if err == ErrDataNotEnouth {
-// 					return nil, false, nil
-// 				}
-// 				if err != nil {
-// 					return nil, false, err
-// 				}
-// 				if ok {
-// 					p.response.Request.Header.Add(key, value)
-// 				} else {
-// 					p.state = StateBody
-// 					break
-// 				}
-// 			}
-// 		case StateBody:
-// 			p.state = StateURL
-// 			return p.response, true, nil
-// 		}
-// 	}
-// }
+			var b []byte
+			if offset == 0 {
+				b = data[:i]
+			} else {
+				p.Append(data[0:i])
+				b, _ = p.buffer.ReadAll()
+				b = b[:len(b)-1]
+			}
+
+			// The first line cannot start with a leading space.
+			if b[0] == ' ' || b[0] == '\t' {
+				return nil, false, textproto.ProtocolError("malformed MIME header initial line head: " + string(b))
+			}
+
+			key := string(bytes.TrimSpace(b[:p.colPos]))
+			value := string(bytes.TrimSpace(b[p.colPos+1 : p.crPos]))
+			p.request.Header.Add(key, value)
+
+			p.resetPos()
+
+			return p.ReadHeader(data[i+1:])
+		case COL:
+			if !(p.crPos < 0) {
+				return nil, false, ErrInvalidData
+			}
+			if p.colPos < 0 {
+				p.colPos = offset + i
+			}
+		default:
+		}
+	}
+	p.Append(data)
+	return nil, false, nil
+}
+
+// ReadBody .
+func (p *Parser) ReadBody(data []byte) (*http.Request, bool, error) {
+	p.resetPos()
+	request := p.request
+	p.request = nil
+	p.state = StateURL
+	return request, true, nil
+}
+
+// ReadRequest .
+func (p *Parser) ReadRequest(data []byte) (*http.Request, bool, error) {
+	switch p.state {
+	case StateURL:
+		return p.ReadRequestLine(data)
+	case StateHeader:
+		return p.ReadHeader(data)
+	case StateBody:
+		return p.ReadBody(data)
+	default:
+		fmt.Println("--- ReadRequest:", string(data))
+	}
+	return nil, false, nil
+}
 
 // New .
 func New() *Parser {
-	hb := NewHTTPBuffer()
+	bb := lbytes.NewBuffer()
 	return &Parser{
-		buffer:   hb,
-		appendfn: hb.Push,
+		buffer:   bb,
+		appendfn: bb.Push,
+		crPos:    -1,
+		lfPos:    -1,
+		colPos:   -1,
 	}
 }
