@@ -109,3 +109,30 @@ func fixPragmaCacheControl(header http.Header) {
 		}
 	}
 }
+
+// Determine whether to hang up after sending a request and body, or
+// receiving a response and body
+// 'header' is the request headers
+func shouldClose(major, minor int, header http.Header, removeCloseHeader bool) bool {
+	if major < 1 {
+		return true
+	}
+
+	conv := header["Connection"]
+	hasClose := httpguts.HeaderValuesContainsToken(conv, "close")
+	if major == 1 && minor == 0 {
+		return hasClose || !httpguts.HeaderValuesContainsToken(conv, "keep-alive")
+	}
+
+	if hasClose && removeCloseHeader {
+		header.Del("Connection")
+	}
+
+	return hasClose
+}
+
+// isH2Upgrade reports whether r represents the http2 "client preface"
+// magic string.
+func isH2Upgrade(r *http.Request) bool {
+	return r.Method == "PRI" && len(r.Header) == 0 && r.URL.Path == "*" && r.Proto == "HTTP/2.0"
+}
