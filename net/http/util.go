@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/golang/net/http/httpguts"
@@ -14,6 +15,11 @@ var (
 	ErrDataNotEnouth = errors.New("data not enougth")
 	// ErrInvalidData .
 	ErrInvalidData = errors.New("invalid data")
+)
+
+const (
+	deleteHostHeader = true
+	keepHostHeader   = false
 )
 
 const (
@@ -79,3 +85,27 @@ func parseRequestLine(line []byte) (method, requestURI, proto string, ok bool) {
 }
 
 func badStringError(what, val string) error { return fmt.Errorf("%s %q", what, val) }
+
+func trim(s []byte) []byte {
+	i := 0
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	n := len(s)
+	for n > i && (s[n-1] == ' ' || s[n-1] == '\t') {
+		n--
+	}
+	return s[i:n]
+}
+
+// RFC 7234, section 5.4: Should treat
+//	Pragma: no-cache
+// like
+//	Cache-Control: no-cache
+func fixPragmaCacheControl(header http.Header) {
+	if hp, ok := header["Pragma"]; ok && len(hp) > 0 && hp[0] == "no-cache" {
+		if _, presentcc := header["Cache-Control"]; !presentcc {
+			header["Cache-Control"] = []string{"no-cache"}
+		}
+	}
+}
