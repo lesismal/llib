@@ -11,8 +11,8 @@ func TestParser(t *testing.T) {
 	parser := New()
 
 	for i := 0; i < len(requestData)-6; i++ {
-		parser.Append(requestData[i : i+1])
-		_, ok, err := parser.ReadRequest()
+		// parser.Append(requestData[i : i+1])
+		_, ok, err := parser.ReadRequest(requestData[i : i+1])
 		if err != nil {
 			t.Fatalf("ReadRequest failed: %v", err)
 		}
@@ -21,8 +21,8 @@ func TestParser(t *testing.T) {
 		}
 	}
 
-	parser.Append(requestData[len(requestData)-6:])
-	request, ok, err := parser.ReadRequest()
+	// parser.Append(requestData[len(requestData)-6:])
+	request, ok, err := parser.ReadRequest(requestData[len(requestData)-6:])
 	if ok {
 		log.Printf("ReadRequest success error: %v, %v, %v, %v, %v, %v, %v, %+v", err, request.Method, request.URL.Path, request.Proto, request.URL.Host, request.URL.Path, request.URL.RawPath, request.Header)
 	} else {
