@@ -17,6 +17,9 @@ type Parser struct {
 	request  *http.Request
 	appendfn func(buf []byte)
 
+	// todo
+	readLimit int
+
 	crPos         int
 	lfPos         int
 	colPos        int
