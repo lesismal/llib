@@ -6,7 +6,7 @@ import (
 )
 
 func TestParser(t *testing.T) {
-	requestData := []byte("POST /echo HTTP/1.1\r\nHost: localhost:8080\r\nConnection: close\r\nContent-Length: 5\r\nAccept-Encoding: gzip\r\n\r\nhello")
+	requestData := []byte("POST /echo HTTP/1.1\r\nHost: localhost:8080\r\nConnection: close \r\n Content-Length :  5\r\nAccept-Encoding : gzip \r\n\r\nhello")
 
 	parser := New()
 
