@@ -154,6 +154,98 @@ func (p *Parser) ReadHeader(data []byte) (*http.Request, bool, error) {
 
 				fixPragmaCacheControl(p.request.Header)
 
+				p.request.Close = shouldClose(p.request.ProtoMajor, p.request.ProtoMinor, p.request.Header, false)
+
+				// todo
+				// err = readTransfer(req, b)
+				// if err != nil {
+				// 	return nil, err
+				// }
+
+				// todo
+				if isH2Upgrade(p.request) {
+					// Because it's neither chunked, nor declared:
+					p.request.ContentLength = -1
+
+					// We want to give handlers a chance to hijack the
+					// connection, but we need to prevent the Server from
+					// dealing with the connection further if it's not
+					// hijacked. Set Close to ensure that:
+					p.request.Close = true
+				}
+
+				// todo
+				// if err != nil {
+				// 	if c.r.hitReadLimit() {
+				// 		return nil, errTooLarge
+				// 	}
+				// 	return nil, err
+				// }
+
+				// if !http1ServerSupportsRequest(req) {
+				// 	return nil, statusError{StatusHTTPVersionNotSupported, "unsupported protocol version"}
+				// }
+
+				// c.lastMethod = req.Method
+				// c.r.setInfiniteReadLimit()
+
+				// hosts, haveHost := req.Header["Host"]
+				// isH2Upgrade := req.isH2Upgrade()
+				// if req.ProtoAtLeast(1, 1) && (!haveHost || len(hosts) == 0) && !isH2Upgrade && req.Method != "CONNECT" {
+				// 	return nil, badRequestError("missing required Host header")
+				// }
+				// if len(hosts) > 1 {
+				// 	return nil, badRequestError("too many Host headers")
+				// }
+				// if len(hosts) == 1 && !httpguts.ValidHostHeader(hosts[0]) {
+				// 	return nil, badRequestError("malformed Host header")
+				// }
+				// for k, vv := range req.Header {
+				// 	if !httpguts.ValidHeaderFieldName(k) {
+				// 		return nil, badRequestError("invalid header name")
+				// 	}
+				// 	for _, v := range vv {
+				// 		if !httpguts.ValidHeaderFieldValue(v) {
+				// 			return nil, badRequestError("invalid header value")
+				// 		}
+				// 	}
+				// }
+				// delete(req.Header, "Host")
+
+				// ctx, cancelCtx := context.WithCancel(ctx)
+				// req.ctx = ctx
+				// req.RemoteAddr = c.remoteAddr
+				// req.TLS = c.tlsState
+				// if body, ok := req.Body.(*body); ok {
+				// 	body.doEarlyClose = true
+				// }
+
+				// // Adjust the read deadline if necessary.
+				// if !hdrDeadline.Equal(wholeReqDeadline) {
+				// 	c.rwc.SetReadDeadline(wholeReqDeadline)
+				// }
+
+				// w = &response{
+				// 	conn:          c,
+				// 	cancelCtx:     cancelCtx,
+				// 	req:           req,
+				// 	reqBody:       req.Body,
+				// 	handlerHeader: make(Header),
+				// 	contentLength: -1,
+				// 	closeNotifyCh: make(chan bool, 1),
+
+				// 	// We populate these ahead of time so we're not
+				// 	// reading from req.Header after their Handler starts
+				// 	// and maybe mutates it (Issue 14940)
+				// 	wants10KeepAlive: req.wantsHttp10KeepAlive(),
+				// 	wantsClose:       req.wantsClose(),
+				// }
+				// if isH2Upgrade {
+				// 	w.closeAfterReply = true
+				// }
+				// w.cw.res = w
+				// w.w = newBufioWriterSize(&w.cw, bufferBeforeChunkingSize)
+
 				return p.ReadBody(data[i+1:])
 			}
 
