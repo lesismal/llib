@@ -1,7 +1,6 @@
 package parser
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 	"net/textproto"
@@ -144,7 +143,23 @@ func (p *Parser) ReadHeader(data []byte) (*http.Request, bool, error) {
 			if p.crPos == 0 {
 				p.state = StateBody
 				p.resetPos()
+
+				p.request.Host = p.request.URL.Host
+				if p.request.Host == "" {
+					p.request.Host = p.request.Header.Get("Host")
+				}
+				if deleteHostHeader {
+					delete(p.request.Header, "Host")
+				}
+
+				fixPragmaCacheControl(p.request.Header)
+
 				return p.ReadBody(data[i+1:])
+			}
+
+			if p.colPos < 0 {
+				b, _ := p.buffer.ReadAll()
+				return nil, false, textproto.ProtocolError("malformed MIME header line: " + string(b))
 			}
 
 			if p.lfPos > 0 {
@@ -165,12 +180,12 @@ func (p *Parser) ReadHeader(data []byte) (*http.Request, bool, error) {
 			}
 
 			// The first line cannot start with a leading space.
-			if b[0] == ' ' || b[0] == '\t' {
+			if len(p.request.Header) == 0 && (b[0] == ' ' || b[0] == '\t') {
 				return nil, false, textproto.ProtocolError("malformed MIME header initial line head: " + string(b))
 			}
 
-			key := string(bytes.TrimSpace(b[:p.colPos]))
-			value := string(bytes.TrimSpace(b[p.colPos+1 : p.crPos]))
+			key := string(trim(b[:p.colPos]))
+			value := string(trim(b[p.colPos+1 : p.crPos]))
 			p.request.Header.Add(key, value)
 
 			p.resetPos()
