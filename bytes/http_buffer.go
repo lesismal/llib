@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/golang/net/http/httpguts"
+	"golang.org/x/net/http/httpguts"
 )
 
 var (
