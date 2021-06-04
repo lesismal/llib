@@ -55,7 +55,7 @@ const (
 	stateServerHandshakeReadFinishedDone                 uint32 = 217
 
 	stateServerHandshakeSendSessionTicket2 uint32 = 218
-	stateServerHandshakeSendFinished2      uint32 = 218
+	stateServerHandshakeSendFinished2      uint32 = 219
 
 	stateServerHandshakeHandshakeDone uint32 = 220
 )
