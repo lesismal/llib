@@ -131,7 +131,6 @@ func (hs *serverHandshakeState) handshake() error {
 	}
 
 	// For an overview of TLS handshaking, see RFC 5246, Section 7.3.
-	// c.buffering = true
 	if hs.checkForResumption() {
 		// The client has included a session ticket and so we do an abbreviated handshake.
 		c.didResume = true
@@ -143,6 +142,7 @@ func (hs *serverHandshakeState) handshake() error {
 			hs.err = err
 			return err
 		}
+		c.buffering = true
 		if err := hs.sendSessionTicket(); err != nil {
 			hs.err = err
 			return err
@@ -184,7 +184,7 @@ func (hs *serverHandshakeState) handshake() error {
 			return err
 		}
 		c.clientFinishedIsFirst = true
-		// c.buffering = true
+		c.buffering = true
 		if err := hs.sendSessionTicket2(); err != nil {
 			hs.err = err
 			return err
