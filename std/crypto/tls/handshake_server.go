@@ -590,6 +590,8 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 			// certificates won't be used.
 			hs.finishedHash.discardHandshakeBuffer()
 		}
+
+		c.buffering = true
 		hs.finishedHash.Write(hs.clientHello.marshal())
 		hs.finishedHash.Write(hs.hello.marshal())
 		if _, err := c.writeRecord(recordTypeHandshake, hs.hello.marshal()); err != nil {
