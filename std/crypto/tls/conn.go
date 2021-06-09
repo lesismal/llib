@@ -963,6 +963,8 @@ func (c *Conn) write(data []byte) (int, error) {
 }
 
 func (c *Conn) flush() (int, error) {
+	c.buffering = false
+
 	if len(c.sendBuf) == 0 {
 		return 0, nil
 	}
@@ -970,7 +972,6 @@ func (c *Conn) flush() (int, error) {
 	n, err := c.conn.Write(c.sendBuf)
 	c.bytesSent += int64(n)
 	c.sendBuf = nil
-	c.buffering = false
 	return n, err
 }
 
