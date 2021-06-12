@@ -35,6 +35,19 @@ func (b *bucket) Delete(k string) bool {
 	return exsist
 }
 
+func (b *bucket) forEach(f func(k string, v interface{}) bool) bool {
+	success := false
+	b.mux.RLock()
+	for k, v := range b.values {
+		success = f(k, v)
+		if !success {
+			break
+		}
+	}
+	b.mux.RUnlock()
+	return success
+}
+
 type Map struct {
 	size    int64
 	buckets []*bucket
@@ -61,6 +74,14 @@ func (m *Map) Delete(k string) {
 
 func (m *Map) Size() int64 {
 	return atomic.LoadInt64(&m.size)
+}
+
+func (m *Map) ForEach(f func(k string, v interface{}) bool) {
+	for _, b := range m.buckets {
+		if !b.forEach(f) {
+			return
+		}
+	}
 }
 
 func NewMap(bucketNum int) *Map {

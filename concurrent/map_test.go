@@ -29,6 +29,17 @@ func TestMap(t *testing.T) {
 			log.Fatalf("invalid value: '%v' for key [%v] ", vv, k)
 		}
 	}
+	cnt := 0
+	m.ForEach(func(k string, v interface{}) bool {
+		if k[3:] != (v.(string))[5:] {
+			log.Fatalf("invalid key-value: '%v', '%v'", k, v)
+		}
+		cnt++
+		return true
+	})
+	if cnt != size {
+		log.Fatalf("invalid ForEach num: %v, want: %v", cnt, size)
+	}
 	if m.Size() != int64(size) {
 		log.Fatalf("invalid size: %v, want: %v", m.Size(), size)
 	}
