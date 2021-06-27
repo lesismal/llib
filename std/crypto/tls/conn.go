@@ -1321,6 +1321,8 @@ func (c *Conn) handleKeyUpdate(keyUpdate *keyUpdateMsg) error {
 
 // Append .
 func (c *Conn) Append(b []byte) (int, error) {
+	c.in.Lock()
+	defer c.in.Unlock()
 	if len(b) > 0 {
 		return c.rawInput.Write(b)
 	}
