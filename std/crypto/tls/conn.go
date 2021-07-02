@@ -26,6 +26,18 @@ var (
 	errDataNotEnough      = errors.New("data not enough")
 )
 
+type Allocator interface {
+	Malloc(size int) []byte
+	Realloc(buf []byte, size int) []byte
+	Free(buf []byte) error
+}
+
+type NullAllocator struct{}
+
+func (a *NullAllocator) Malloc(size int) []byte              { return nil }
+func (a *NullAllocator) Realloc(buf []byte, size int) []byte { return nil }
+func (a *NullAllocator) Free(buf []byte) error               { return nil }
+
 // A Conn represents a secured connection.
 // It implements the net.Conn interface.
 type Conn struct {
@@ -130,6 +142,8 @@ type Conn struct {
 	hs13                 *serverHandshakeStateTLS13
 	certMsg              *certificateMsgTLS13
 	certMsgVerified      []bool
+
+	allocator Allocator
 }
 
 // Access to net.Conn methods.
@@ -290,8 +304,9 @@ func (hc *halfConn) explicitNonceLen() int {
 		}
 		return 0
 	default:
-		panic("unknown cipher type")
+		// panic("unknown cipher type")
 	}
+	return -1
 }
 
 // extractPadding returns, in constant time, the length of the padding to remove
@@ -371,6 +386,9 @@ func (hc *halfConn) decrypt(record []byte) ([]byte, recordType, error) {
 	paddingLen := 0
 
 	explicitNonceLen := hc.explicitNonceLen()
+	if explicitNonceLen < 0 {
+		return nil, 0, errors.New("unknown cipher type")
+	}
 
 	if hc.cipher != nil {
 		switch c := hc.cipher.(type) {
@@ -985,19 +1003,20 @@ var outBufPool = sync.Pool{
 // writeRecordLocked writes a TLS record with the given type and payload to the
 // connection and updates the record layer state.
 func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
-	outBufPtr := outBufPool.Get().(*[]byte)
-	outBuf := *outBufPtr
-	defer func() {
-		// You might be tempted to simplify this by just passing &outBuf to Put,
-		// but that would make the local copy of the outBuf slice header escape
-		// to the heap, causing an allocation. Instead, we keep around the
-		// pointer to the slice header returned by Get, which is already on the
-		// heap, and overwrite and return that.
-		*outBufPtr = outBuf
-		outBufPool.Put(outBufPtr)
-	}()
+	// outBufPtr := outBufPool.Get().(*[]byte)
+	// outBuf := *outBufPtr
+	// defer func() {
+	// 	// You might be tempted to simplify this by just passing &outBuf to Put,
+	// 	// but that would make the local copy of the outBuf slice header escape
+	// 	// to the heap, causing an allocation. Instead, we keep around the
+	// 	// pointer to the slice header returned by Get, which is already on the
+	// 	// heap, and overwrite and return that.
+	// 	*outBufPtr = outBuf
+	// 	outBufPool.Put(outBufPtr)
+	// }()
 
 	var n int
+	var outBuf = c.allocator.Malloc(recordHeaderLen + len(data))[0:0]
 	for len(data) > 0 {
 		m := len(data)
 		if maxPayload := c.maxPayloadSizeForWrite(typ); m > maxPayload {
@@ -1172,8 +1191,10 @@ func (c *Conn) Write(b []byte) (int, error) {
 			break
 		}
 	}
-	defer atomic.AddInt32(&c.activeCall, -2)
-
+	defer func() {
+		atomic.AddInt32(&c.activeCall, -2)
+		c.allocator.Free(b)
+	}()
 	if err := c.Handshake(); err != nil {
 		return 0, err
 	}
