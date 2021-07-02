@@ -32,11 +32,27 @@ type Allocator interface {
 	Free(buf []byte) error
 }
 
-type NullAllocator struct{}
+type NativeAllocator struct{}
 
-func (a *NullAllocator) Malloc(size int) []byte              { return nil }
-func (a *NullAllocator) Realloc(buf []byte, size int) []byte { return nil }
-func (a *NullAllocator) Free(buf []byte) error               { return nil }
+// Malloc .
+func (a *NativeAllocator) Malloc(size int) []byte {
+	return make([]byte, size)
+}
+
+// Realloc .
+func (a *NativeAllocator) Realloc(buf []byte, size int) []byte {
+	if size <= cap(buf) {
+		return buf[:size]
+	}
+	newBuf := make([]byte, size)
+	copy(newBuf, buf)
+	return newBuf
+}
+
+// Free .
+func (a *NativeAllocator) Free(buf []byte) error {
+	return nil
+}
 
 // A Conn represents a secured connection.
 // It implements the net.Conn interface.
