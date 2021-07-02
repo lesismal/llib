@@ -32,7 +32,7 @@ import (
 // using conn as the underlying transport.
 // The configuration config must be non-nil and must include
 // at least one certificate or else set GetCertificate.
-func NewConn(conn net.Conn, config *Config, isClient bool, isNonBlock bool, readBufferSize int) *Conn {
+func NewConn(conn net.Conn, config *Config, isClient bool, isNonBlock bool, readBufferSize int, v ...interface{}) *Conn {
 	c := &Conn{
 		conn:       conn,
 		config:     config,
@@ -48,6 +48,14 @@ func NewConn(conn net.Conn, config *Config, isClient bool, isNonBlock bool, read
 			readBufferSize = defaultReadBufferSize
 		}
 		c.ReadBuffer = make([]byte, readBufferSize)
+	}
+	if len(v) > 0 {
+		if allocator, ok := v[0].(Allocator); ok {
+			c.allocator = allocator
+		}
+	}
+	if c.allocator == nil {
+		c.allocator = &NullAllocator{}
 	}
 	return c
 }
@@ -135,11 +143,11 @@ func (timeoutError) Temporary() bool { return true }
 //
 // DialWithDialer interprets a nil configuration as equivalent to the zero
 // configuration; see the documentation of Config for the defaults.
-func DialWithDialer(dialer *net.Dialer, network, addr string, config *Config) (*Conn, error) {
-	return dial(context.Background(), dialer, network, addr, config)
+func DialWithDialer(dialer *net.Dialer, network, addr string, config *Config, v ...interface{}) (*Conn, error) {
+	return dial(context.Background(), dialer, network, addr, config, v...)
 }
 
-func dial(ctx context.Context, netDialer *net.Dialer, network, addr string, config *Config) (*Conn, error) {
+func dial(ctx context.Context, netDialer *net.Dialer, network, addr string, config *Config, v ...interface{}) (*Conn, error) {
 	// We want the Timeout and Deadline values from dialer to cover the
 	// whole process: TCP connection and TLS handshake. This means that we
 	// also need to start our own timers now.
@@ -188,7 +196,14 @@ func dial(ctx context.Context, netDialer *net.Dialer, network, addr string, conf
 	}
 
 	conn := Client(rawConn, config)
-
+	if len(v) > 0 {
+		if allocator, ok := v[0].(Allocator); ok {
+			conn.allocator = allocator
+		}
+	}
+	if conn.allocator == nil {
+		conn.allocator = &NullAllocator{}
+	}
 	if hsErrCh == nil {
 		err = conn.Handshake()
 	} else {
@@ -225,8 +240,8 @@ func dial(ctx context.Context, netDialer *net.Dialer, network, addr string, conf
 // Dial interprets a nil configuration as equivalent to
 // the zero configuration; see the documentation of Config
 // for the defaults.
-func Dial(network, addr string, config *Config) (*Conn, error) {
-	return DialWithDialer(new(net.Dialer), network, addr, config)
+func Dial(network, addr string, config *Config, v ...interface{}) (*Conn, error) {
+	return DialWithDialer(new(net.Dialer), network, addr, config, v...)
 }
 
 // Dialer dials TLS connections given a configuration and a Dialer for the
