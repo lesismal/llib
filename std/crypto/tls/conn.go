@@ -987,7 +987,12 @@ func (c *Conn) maxPayloadSizeForWrite(typ recordType) int {
 
 func (c *Conn) write(data []byte) (int, error) {
 	if c.buffering {
-		c.sendBuf = append(c.sendBuf, data...)
+		if len(c.sendBuf) == 0 {
+			c.sendBuf = c.allocator.Malloc(len(data))
+			copy(c.sendBuf, data)
+		} else {
+			c.sendBuf = append(c.sendBuf, data...)
+		}
 		return len(data), nil
 	}
 
@@ -1032,14 +1037,16 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 	// }()
 
 	var n int
-	var outBuf = c.allocator.Malloc(recordHeaderLen + len(data))[0:0]
+	var outBuf []byte
+	// var outBuf = c.allocator.Malloc(recordHeaderLen + len(data))[0:0]
 	for len(data) > 0 {
 		m := len(data)
 		if maxPayload := c.maxPayloadSizeForWrite(typ); m > maxPayload {
 			m = maxPayload
 		}
 
-		_, outBuf = sliceForAppend(outBuf[:0], recordHeaderLen)
+		outBuf = c.allocator.Malloc(recordHeaderLen)
+		// _, outBuf = sliceForAppend(outBuf[:0], recordHeaderLen)
 		outBuf[0] = byte(typ)
 		vers := c.vers
 		if vers == 0 {
@@ -1197,6 +1204,9 @@ var (
 // has not yet completed. See SetDeadline, SetReadDeadline, and
 // SetWriteDeadline.
 func (c *Conn) Write(b []byte) (int, error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
 	// interlock with Close below
 	for {
 		x := atomic.LoadInt32(&c.activeCall)
