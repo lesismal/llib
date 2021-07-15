@@ -32,7 +32,7 @@ import (
 // using conn as the underlying transport.
 // The configuration config must be non-nil and must include
 // at least one certificate or else set GetCertificate.
-func NewConn(conn net.Conn, config *Config, isClient bool, isNonBlock bool, readBufferSize int, v ...interface{}) *Conn {
+func NewConn(conn net.Conn, config *Config, isClient bool, isNonBlock bool, v ...interface{}) *Conn {
 	c := &Conn{
 		conn:       conn,
 		config:     config,
@@ -42,12 +42,6 @@ func NewConn(conn net.Conn, config *Config, isClient bool, isNonBlock bool, read
 	c.handshakeFn = c.serverHandshake
 	if isClient {
 		c.handshakeFn = c.clientHandshake
-	}
-	if isNonBlock {
-		if readBufferSize <= 0 {
-			readBufferSize = defaultReadBufferSize
-		}
-		c.ReadBuffer = make([]byte, readBufferSize)
 	}
 	if len(v) > 0 {
 		if allocator, ok := v[0].(Allocator); ok {

@@ -149,7 +149,6 @@ type Conn struct {
 	tmp [16]byte
 
 	isNonBlock bool
-	ReadBuffer []byte
 
 	handshakeStatusAsync uint32
 	clientHello          *clientHelloMsg
@@ -172,17 +171,9 @@ func (c *Conn) Conn() net.Conn {
 }
 
 // ResetConn resets conn
-func (c *Conn) ResetConn(conn net.Conn, nonBlock bool, readBufferSize int) {
+func (c *Conn) ResetConn(conn net.Conn, nonBlock bool) {
 	c.conn = conn
 	c.isNonBlock = nonBlock
-	if nonBlock {
-		if readBufferSize <= 0 {
-			readBufferSize = defaultReadBufferSize
-		}
-		if len(c.ReadBuffer) < readBufferSize {
-			c.ReadBuffer = append(c.ReadBuffer, make([]byte, readBufferSize-len(c.ReadBuffer))...)
-		}
-	}
 }
 
 // LocalAddr returns the local network address.
