@@ -988,10 +988,11 @@ func (c *Conn) maxPayloadSizeForWrite(typ recordType) int {
 func (c *Conn) write(data []byte) (int, error) {
 	if c.buffering {
 		if len(c.sendBuf) == 0 {
-			c.sendBuf = c.allocator.Malloc(len(data))
+			c.sendBuf = data
 			copy(c.sendBuf, data)
 		} else {
 			c.sendBuf = append(c.sendBuf, data...)
+			c.allocator.Free(data)
 		}
 		return len(data), nil
 	}
