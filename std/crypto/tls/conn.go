@@ -59,7 +59,6 @@ func (a *NativeAllocator) Free(buf []byte) error {
 type Conn struct {
 	// constant
 	conn        net.Conn
-	isClient    bool
 	handshakeFn func() error // (*Conn).clientHandshake or serverHandshake
 
 	// handshakeStatus is 1 if the connection is currently transferring
@@ -67,16 +66,14 @@ type Conn struct {
 	// This field is only to be accessed with sync/atomic.
 	handshakeStatus uint32
 	// constant after handshake; protected by handshakeMutex
-	handshakeMutex sync.Mutex
-	handshakeErr   error   // error resulting from handshake
-	vers           uint16  // TLS version
-	haveVers       bool    // version has been negotiated
-	config         *Config // configuration passed to constructor
+	// handshakeMutex sync.Mutex
+	handshakeErr error   // error resulting from handshake
+	vers         uint16  // TLS version
+	config       *Config // configuration passed to constructor
 	// handshakes counts the number of handshakes performed on the
 	// connection so far. If renegotiation is disabled then this is either
 	// zero or one.
 	handshakes       int
-	didResume        bool // whether this connection was a session resumption
 	cipherSuite      uint16
 	ocspResponse     []byte   // stapled OCSP response
 	scts             [][]byte // signed certificate timestamps from server
@@ -86,10 +83,7 @@ type Conn struct {
 	verifiedChains [][]*x509.Certificate
 	// serverName contains the server name indicated by the client, if any.
 	serverName string
-	// secureRenegotiation is true if the server echoed the secure
-	// renegotiation extension. (This is meaningless as a server because
-	// renegotiation is not supported in that case.)
-	secureRenegotiation bool
+
 	// ekm is a closure for exporting keying material.
 	ekm func(label string, context []byte, length int) ([]byte, error)
 	// resumptionSecret is the resumption_master_secret for handling
@@ -101,18 +95,6 @@ type Conn struct {
 	// all are tried to decrypt tickets.
 	ticketKeys []ticketKey
 
-	// clientFinishedIsFirst is true if the client sent the first Finished
-	// message during the most recent handshake. This is recorded because
-	// the first transmitted Finished message is the tls-unique
-	// channel-binding value.
-	clientFinishedIsFirst bool
-
-	// closeNotifyErr is any error from sending the alertCloseNotify record.
-	closeNotifyErr error
-	// closeNotifySent is true if the Conn attempted to send an
-	// alertCloseNotify record.
-	closeNotifySent bool
-
 	// clientFinished and serverFinished contain the Finished message sent
 	// by the client or server in the most recent handshake. This is
 	// retained to support the renegotiation extension and tls-unique
@@ -123,13 +105,40 @@ type Conn struct {
 	// clientProtocol is the negotiated ALPN protocol.
 	clientProtocol string
 
+	// closeNotifyErr is any error from sending the alertCloseNotify record.
+	closeNotifyErr error
+
+	closeMux sync.Mutex
+	closed   bool
+	// secureRenegotiation is true if the server echoed the secure
+	// renegotiation extension. (This is meaningless as a server because
+	// renegotiation is not supported in that case.)
+	secureRenegotiation bool
+
+	// clientFinishedIsFirst is true if the client sent the first Finished
+	// message during the most recent handshake. This is recorded because
+	// the first transmitted Finished message is the tls-unique
+	// channel-binding value.
+	clientFinishedIsFirst bool
+
+	haveVers  bool // version has been negotiated
+	didResume bool // whether this connection was a session resumption
+
+	// closeNotifySent is true if the Conn attempted to send an
+	// alertCloseNotify record.
+	closeNotifySent bool
+
+	isClient   bool
+	isNonBlock bool
+
 	// input/output
-	in, out   halfConn
-	rawInput  bytes.Buffer // raw input, starting with a record header
-	input     bytes.Reader // application data waiting to be read, from rawInput.Next
-	hand      bytes.Buffer // handshake data waiting to be read
-	buffering bool         // whether records are buffered in sendBuf
-	sendBuf   []byte       // a buffer of records waiting to be sent
+	buffering   bool   // whether records are buffered in sendBuf
+	sendBuf     []byte // a buffer of records waiting to be sent
+	in, out     halfConn
+	rawInputOff int
+	rawInput    []byte       //bytes.Buffer // raw input, starting with a record header
+	input       bytes.Reader // application data waiting to be read, from rawInput.Next
+	hand        bytes.Buffer // handshake data waiting to be read
 
 	// bytesSent counts the bytes of application data sent.
 	// packetsSent counts packets.
@@ -144,11 +153,9 @@ type Conn struct {
 	// activeCall is an atomic int32; the low bit is whether Close has
 	// been called. the rest of the bits are the number of goroutines
 	// in Conn.Write.
-	activeCall int32
+	// activeCall int32
 
 	tmp [16]byte
-
-	isNonBlock bool
 
 	handshakeStatusAsync uint32
 	clientHello          *clientHelloMsg
@@ -209,7 +216,7 @@ func (c *Conn) SetWriteDeadline(t time.Time) error {
 // A halfConn represents one direction of the record layer
 // connection, either sending or receiving.
 type halfConn struct {
-	sync.Mutex
+	// sync.Mutex
 
 	err     error       // first permanent error
 	version uint16      // protocol version
@@ -625,7 +632,7 @@ func (e RecordHeaderError) Error() string { return "tls: " + e.Msg }
 func (c *Conn) newRecordHeaderError(conn net.Conn, msg string) (err RecordHeaderError) {
 	err.Msg = msg
 	err.Conn = conn
-	copy(err.RecordHeader[:], c.rawInput.Bytes())
+	copy(err.RecordHeader[:], c.rawInput[c.rawInputOff:])
 	return err
 }
 
@@ -656,7 +663,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	handshakeComplete := c.handshakeComplete()
 
 	if c.isNonBlock {
-		if c.rawInput.Len() < recordHeaderLen {
+		if len(c.rawInput)-c.rawInputOff < recordHeaderLen {
 			return errDataNotEnough
 		}
 	} else {
@@ -671,7 +678,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 			// RFC 8446, Section 6.1 suggests that EOF without an alertCloseNotify
 			// is an error, but popular web sites seem to do this, so we accept it
 			// if and only if at the record boundary.
-			if err == io.ErrUnexpectedEOF && c.rawInput.Len() == 0 {
+			if err == io.ErrUnexpectedEOF && len(c.rawInput)-c.rawInputOff == 0 {
 				err = io.EOF
 			}
 			if e, ok := err.(net.Error); !ok || !e.Temporary() {
@@ -681,7 +688,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 		}
 	}
 
-	hdr := c.rawInput.Bytes()[:recordHeaderLen]
+	hdr := c.rawInput[c.rawInputOff : c.rawInputOff+recordHeaderLen]
 	typ := recordType(hdr[0])
 
 	// No valid TLS record has a type of 0x80, however SSLv2 handshakes
@@ -716,7 +723,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	}
 
 	if c.isNonBlock {
-		if c.rawInput.Len() < recordHeaderLen+n {
+		if len(c.rawInput)-c.rawInputOff < recordHeaderLen+n {
 			return errDataNotEnough
 		}
 	} else {
@@ -729,7 +736,12 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	}
 
 	// Process message.
-	record := c.rawInput.Next(recordHeaderLen + n)
+	record := c.rawInput[c.rawInputOff : c.rawInputOff+recordHeaderLen+n]
+	c.rawInputOff += (recordHeaderLen + n)
+	if len(c.rawInput) == c.rawInputOff {
+		c.rawInput = c.rawInput[0:0]
+		c.rawInputOff = 0
+	}
 	data, typ, err := c.in.decrypt(record)
 	if err != nil {
 		return c.in.setErrorLocked(c.sendAlert(err.(alert)))
@@ -861,15 +873,25 @@ func (r *atLeastReader) Read(p []byte) (int, error) {
 // readFromUntil reads from r into c.rawInput until c.rawInput contains
 // at least n bytes or else returns an error.
 func (c *Conn) readFromUntil(r io.Reader, n int) error {
-	if c.rawInput.Len() >= n {
+	if len(c.rawInput)-c.rawInputOff >= n {
 		return nil
 	}
-	needs := n - c.rawInput.Len()
+	if len(c.rawInput) == c.rawInputOff {
+		c.rawInput = c.rawInput[0:0]
+		c.rawInputOff = 0
+	}
+
+	needs := n - (len(c.rawInput) - c.rawInputOff)
 	// There might be extra input waiting on the wire. Make a best effort
 	// attempt to fetch it so that it can be used in (*Conn).Read to
 	// "predict" closeNotify alerts.
-	c.rawInput.Grow(needs + bytes.MinRead)
-	_, err := c.rawInput.ReadFrom(&atLeastReader{r, int64(needs)})
+	if cap(c.rawInput) < c.rawInputOff+needs+bytes.MinRead {
+		buf := c.allocator.Malloc(c.rawInputOff + needs + bytes.MinRead - cap(c.rawInput))
+		c.rawInput = append(c.rawInput[:], buf...)
+		c.allocator.Free(buf)
+	}
+	c.rawInput = c.rawInput[:c.rawInputOff+needs]
+	_, err := io.ReadFull(r, c.rawInput[c.rawInputOff:])
 	return err
 }
 
@@ -894,8 +916,8 @@ func (c *Conn) sendAlertLocked(err alert) error {
 
 // sendAlert sends a TLS alert message.
 func (c *Conn) sendAlert(err alert) error {
-	c.out.Lock()
-	defer c.out.Unlock()
+	// c.out.Lock()
+	// defer c.out.Unlock()
 	return c.sendAlertLocked(err)
 }
 
@@ -1079,8 +1101,8 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 // writeRecord writes a TLS record with the given type and payload to the
 // connection and updates the record layer state.
 func (c *Conn) writeRecord(typ recordType, data []byte) (int, error) {
-	c.out.Lock()
-	defer c.out.Unlock()
+	// c.out.Lock()
+	// defer c.out.Unlock()
 
 	return c.writeRecordLocked(typ, data)
 }
@@ -1196,29 +1218,25 @@ var (
 // has not yet completed. See SetDeadline, SetReadDeadline, and
 // SetWriteDeadline.
 func (c *Conn) Write(b []byte) (int, error) {
+	defer c.allocator.Free(b)
+
 	if len(b) == 0 {
 		return 0, nil
 	}
-	// interlock with Close below
-	for {
-		x := atomic.LoadInt32(&c.activeCall)
-		if x&1 != 0 {
-			return 0, net.ErrClosed
-		}
-		if atomic.CompareAndSwapInt32(&c.activeCall, x, x+2) {
-			break
-		}
+
+	c.closeMux.Lock()
+	defer c.closeMux.Unlock()
+
+	if c.closed {
+		return 0, net.ErrClosed
 	}
-	defer func() {
-		atomic.AddInt32(&c.activeCall, -2)
-		c.allocator.Free(b)
-	}()
+
 	if err := c.Handshake(); err != nil {
 		return 0, err
 	}
 
-	c.out.Lock()
-	defer c.out.Unlock()
+	// c.out.Lock()
+	// defer c.out.Unlock()
 
 	if err := c.out.err; err != nil {
 		return 0, err
@@ -1291,8 +1309,8 @@ func (c *Conn) handleRenegotiation() error {
 		return errors.New("tls: unknown Renegotiation value")
 	}
 
-	c.handshakeMutex.Lock()
-	defer c.handshakeMutex.Unlock()
+	// c.handshakeMutex.Lock()
+	// defer c.handshakeMutex.Unlock()
 
 	atomic.StoreUint32(&c.handshakeStatus, 0)
 	if c.handshakeErr = c.clientHandshake(); c.handshakeErr == nil {
@@ -1340,8 +1358,8 @@ func (c *Conn) handleKeyUpdate(keyUpdate *keyUpdateMsg) error {
 	c.in.setTrafficSecret(cipherSuite, newSecret)
 
 	if keyUpdate.updateRequested {
-		c.out.Lock()
-		defer c.out.Unlock()
+		// c.out.Lock()
+		// defer c.out.Unlock()
 
 		msg := &keyUpdateMsg{}
 		_, err := c.writeRecordLocked(recordTypeHandshake, msg.marshal())
@@ -1360,10 +1378,29 @@ func (c *Conn) handleKeyUpdate(keyUpdate *keyUpdateMsg) error {
 
 // Append .
 func (c *Conn) Append(b []byte) (int, error) {
-	c.in.Lock()
-	defer c.in.Unlock()
+	c.closeMux.Lock()
+	defer c.closeMux.Unlock()
+
+	if c.closed {
+		return 0, net.ErrClosed
+	}
+
+	// c.in.Lock()
+	// defer c.in.Unlock()
+
 	if len(b) > 0 {
-		return c.rawInput.Write(b)
+		if cap(c.rawInput) == 0 {
+			needs := len(b)
+			if needs < bytes.MinRead {
+				needs = bytes.MinRead
+			}
+			c.rawInput = c.allocator.Malloc(needs)[0:0]
+			c.rawInputOff = 0
+		} else if len(c.rawInput) == c.rawInputOff {
+			c.rawInput = c.rawInput[0:0]
+			c.rawInputOff = 0
+		}
+		c.rawInput = append(c.rawInput, b...)
 	}
 	return 0, nil
 }
@@ -1375,6 +1412,12 @@ func (c *Conn) Append(b []byte) (int, error) {
 // has not yet completed. See SetDeadline, SetReadDeadline, and
 // SetWriteDeadline.
 func (c *Conn) Read(b []byte) (int, error) {
+	c.closeMux.Lock()
+	defer c.closeMux.Unlock()
+	if c.closed {
+		return 0, net.ErrClosed
+	}
+
 	if err := c.Handshake(); err != nil {
 		if c.isNonBlock && err == errDataNotEnough {
 			return 0, nil
@@ -1387,8 +1430,8 @@ func (c *Conn) Read(b []byte) (int, error) {
 		return 0, nil
 	}
 
-	c.in.Lock()
-	defer c.in.Unlock()
+	// c.in.Lock()
+	// defer c.in.Unlock()
 
 	for c.input.Len() == 0 {
 		if err := c.readRecord(); err != nil {
@@ -1416,8 +1459,8 @@ func (c *Conn) Read(b []byte) (int, error) {
 	// the EOF until its next read, by which time a client goroutine might
 	// have already tried to reuse the HTTP connection for a new request.
 	// See https://golang.org/cl/76400046 and https://golang.org/issue/3514
-	if n != 0 && c.input.Len() == 0 && c.rawInput.Len() > 0 &&
-		recordType(c.rawInput.Bytes()[0]) == recordTypeAlert {
+	if n != 0 && c.input.Len() == 0 && len(c.rawInput)-c.rawInputOff > 0 &&
+		recordType(c.rawInput[c.rawInputOff]) == recordTypeAlert {
 		if err := c.readRecord(); err != nil {
 			if c.isNonBlock && err == errDataNotEnough {
 				return 0, nil
@@ -1429,28 +1472,102 @@ func (c *Conn) Read(b []byte) (int, error) {
 	return n, nil
 }
 
+// Append .
+func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error) {
+	c.closeMux.Lock()
+	defer c.closeMux.Unlock()
+
+	if c.closed {
+		return 0, 0, net.ErrClosed
+	}
+
+	// c.in.Lock()
+	// defer c.in.Unlock()
+
+	if len(bufAppend) > 0 {
+		if cap(c.rawInput) == 0 {
+			needs := len(bufAppend)
+			if needs < bytes.MinRead {
+				needs = bytes.MinRead
+			}
+			c.rawInput = c.allocator.Malloc(needs)[0:0]
+			c.rawInputOff = 0
+		} else if len(c.rawInput) == c.rawInputOff {
+			c.rawInput = c.rawInput[0:0]
+			c.rawInputOff = 0
+		}
+		c.rawInput = append(c.rawInput, bufAppend...)
+	}
+
+	if err := c.Handshake(); err != nil {
+		if c.isNonBlock && err == errDataNotEnough {
+			return len(bufAppend), 0, nil
+		}
+		return len(bufAppend), 0, err
+	}
+
+	if len(bufRead) == 0 {
+		// Put this after Handshake, in case people were calling
+		// Read(nil) for the side effect of the Handshake.
+		return len(bufAppend), 0, nil
+	}
+
+	for c.input.Len() == 0 {
+		if err := c.readRecord(); err != nil {
+			if c.isNonBlock && err == errDataNotEnough {
+				return len(bufAppend), 0, nil
+			}
+			return len(bufAppend), 0, err
+		}
+		for c.hand.Len() > 0 {
+			if err := c.handlePostHandshakeMessage(); err != nil {
+				if c.isNonBlock && err == errDataNotEnough {
+					return len(bufAppend), 0, nil
+				}
+				return len(bufAppend), 0, err
+			}
+		}
+	}
+
+	n, _ := c.input.Read(bufRead)
+
+	// If a close-notify alert is waiting, read it so that we can return (n,
+	// EOF) instead of (n, nil), to signal to the HTTP response reading
+	// goroutine that the connection is now closed. This eliminates a race
+	// where the HTTP response reading goroutine would otherwise not observe
+	// the EOF until its next read, by which time a client goroutine might
+	// have already tried to reuse the HTTP connection for a new request.
+	// See https://golang.org/cl/76400046 and https://golang.org/issue/3514
+	if n != 0 && c.input.Len() == 0 && len(c.rawInput)-c.rawInputOff > 0 &&
+		recordType(c.rawInput[c.rawInputOff]) == recordTypeAlert {
+		if err := c.readRecord(); err != nil {
+			if c.isNonBlock && err == errDataNotEnough {
+				return len(bufAppend), 0, nil
+			}
+			return len(bufAppend), n, err // will be io.EOF on closeNotify
+		}
+	}
+
+	return len(bufAppend), n, nil
+}
+
+func (c *Conn) release() {
+	if cap(c.rawInput) > 0 {
+		c.allocator.Free(c.rawInput)
+	}
+}
+
 // Close closes the connection.
 func (c *Conn) Close() error {
-	// Interlock with Conn.Write above.
-	var x int32
-	for {
-		x = atomic.LoadInt32(&c.activeCall)
-		if x&1 != 0 {
-			return net.ErrClosed
-		}
-		if atomic.CompareAndSwapInt32(&c.activeCall, x, x|1) {
-			break
-		}
+	c.closeMux.Lock()
+	defer c.closeMux.Unlock()
+
+	if c.closed {
+		return net.ErrClosed
 	}
-	if x != 0 {
-		// io.Writer and io.Closer should not be used concurrently.
-		// If Close is called while a Write is currently in-flight,
-		// interpret that as a sign that this Close is really just
-		// being used to break the Write and/or clean up resources and
-		// avoid sending the alertCloseNotify, which may block
-		// waiting on handshakeMutex or the c.out mutex.
-		return c.conn.Close()
-	}
+	c.closed = true
+
+	c.release()
 
 	var alertErr error
 	if c.handshakeComplete() {
@@ -1479,8 +1596,8 @@ func (c *Conn) CloseWrite() error {
 }
 
 func (c *Conn) closeNotify() error {
-	c.out.Lock()
-	defer c.out.Unlock()
+	// c.out.Lock()
+	// defer c.out.Unlock()
 
 	if !c.closeNotifySent {
 		// Set a Write Deadline to prevent possibly blocking forever.
@@ -1502,8 +1619,8 @@ func (c *Conn) closeNotify() error {
 // For control over canceling or setting a timeout on a handshake, use
 // the Dialer's DialContext method.
 func (c *Conn) Handshake() error {
-	c.handshakeMutex.Lock()
-	defer c.handshakeMutex.Unlock()
+	// c.handshakeMutex.Lock()
+	// defer c.handshakeMutex.Unlock()
 
 	if err := c.handshakeErr; err != nil {
 		return err
@@ -1512,8 +1629,8 @@ func (c *Conn) Handshake() error {
 		return nil
 	}
 
-	c.in.Lock()
-	defer c.in.Unlock()
+	// c.in.Lock()
+	// defer c.in.Unlock()
 
 	c.handshakeErr = c.handshakeFn()
 	if c.isNonBlock && c.handshakeErr == errDataNotEnough {
@@ -1537,8 +1654,8 @@ func (c *Conn) Handshake() error {
 
 // ConnectionState returns basic TLS details about the connection.
 func (c *Conn) ConnectionState() ConnectionState {
-	c.handshakeMutex.Lock()
-	defer c.handshakeMutex.Unlock()
+	// c.handshakeMutex.Lock()
+	// defer c.handshakeMutex.Unlock()
 	return c.connectionStateLocked()
 }
 
@@ -1573,8 +1690,8 @@ func (c *Conn) connectionStateLocked() ConnectionState {
 // OCSPResponse returns the stapled OCSP response from the TLS server, if
 // any. (Only valid for client connections.)
 func (c *Conn) OCSPResponse() []byte {
-	c.handshakeMutex.Lock()
-	defer c.handshakeMutex.Unlock()
+	// c.handshakeMutex.Lock()
+	// defer c.handshakeMutex.Unlock()
 
 	return c.ocspResponse
 }
@@ -1583,8 +1700,8 @@ func (c *Conn) OCSPResponse() []byte {
 // connecting to host. If so, it returns nil; if not, it returns an error
 // describing the problem.
 func (c *Conn) VerifyHostname(host string) error {
-	c.handshakeMutex.Lock()
-	defer c.handshakeMutex.Unlock()
+	// c.handshakeMutex.Lock()
+	// defer c.handshakeMutex.Unlock()
 	if !c.isClient {
 		return errors.New("tls: VerifyHostname called on TLS server connection")
 	}
