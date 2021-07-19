@@ -136,9 +136,10 @@ type Conn struct {
 	sendBuf     []byte // a buffer of records waiting to be sent
 	in, out     halfConn
 	rawInputOff int
-	rawInput    []byte       //bytes.Buffer // raw input, starting with a record header
+	rawInput    []byte       // bytes.Buffer // raw input, starting with a record header
 	input       bytes.Reader // application data waiting to be read, from rawInput.Next
-	hand        bytes.Buffer // handshake data waiting to be read
+	handOff     int
+	hand        []byte // bytes.Buffer // handshake data waiting to be read
 
 	// bytesSent counts the bytes of application data sent.
 	// packetsSent counts packets.
@@ -761,7 +762,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	}
 
 	// Handshake messages MUST NOT be interleaved with other record types in TLS 1.3.
-	if c.vers == VersionTLS13 && typ != recordTypeHandshake && c.hand.Len() > 0 {
+	if c.vers == VersionTLS13 && typ != recordTypeHandshake && len(c.hand)-c.handOff > 0 {
 		return c.in.setErrorLocked(c.sendAlert(alertUnexpectedMessage))
 	}
 
@@ -794,7 +795,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 			return c.in.setErrorLocked(c.sendAlert(alertDecodeError))
 		}
 		// Handshake messages are not allowed to fragment across the CCS.
-		if c.hand.Len() > 0 {
+		if len(c.hand)-c.handOff > 0 {
 			return c.in.setErrorLocked(c.sendAlert(alertUnexpectedMessage))
 		}
 		// In TLS 1.3, change_cipher_spec records are ignored until the
@@ -830,7 +831,11 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 		if len(data) == 0 || expectChangeCipherSpec {
 			return c.in.setErrorLocked(c.sendAlert(alertUnexpectedMessage))
 		}
-		c.hand.Write(data)
+		if c.hand == nil {
+			c.hand = c.allocator.Malloc(len(data))[0:0]
+			c.handOff = 0
+		}
+		c.hand = append(c.hand, data...)
 	}
 
 	return nil
@@ -1111,39 +1116,46 @@ func (c *Conn) writeRecord(typ recordType, data []byte) (int, error) {
 // the record layer.
 func (c *Conn) readHandshake() (interface{}, error) {
 	if c.isNonBlock {
-		if c.hand.Len() < 4 {
+		if len(c.hand)-c.handOff < 4 {
 			if err := c.readRecord(); err != nil {
 				return nil, err
 			}
 		}
 	} else {
-		for c.hand.Len() < 4 {
+		for len(c.hand)-c.handOff < 4 {
 			if err := c.readRecord(); err != nil {
 				return nil, err
 			}
 		}
 	}
 
-	data := c.hand.Bytes()
+	data := c.hand[c.handOff:]
 	n := int(data[1])<<16 | int(data[2])<<8 | int(data[3])
 	if n > maxHandshake {
 		c.sendAlertLocked(alertInternalError)
 		return nil, c.in.setErrorLocked(fmt.Errorf("tls: handshake message of length %d bytes exceeds maximum of %d bytes", n, maxHandshake))
 	}
 	if c.isNonBlock {
-		if c.hand.Len() < 4+n {
+		if len(c.hand)-c.handOff < 4+n {
 			if err := c.readRecord(); err != nil {
 				return nil, err
 			}
 		}
 	} else {
-		for c.hand.Len() < 4+n {
+		for len(c.hand)-c.handOff < 4+n {
 			if err := c.readRecord(); err != nil {
 				return nil, err
 			}
 		}
 	}
-	data = c.hand.Next(4 + n)
+	data = c.hand[c.handOff : c.handOff+4+n]
+	if c.handOff+4+n == len(c.hand) {
+		c.hand = c.hand[0:0]
+		c.handOff = 0
+	} else {
+		c.handOff += (4 + n)
+	}
+
 	var m handshakeMessage
 	switch data[0] {
 	case typeHelloRequest:
@@ -1440,7 +1452,7 @@ func (c *Conn) Read(b []byte) (int, error) {
 			}
 			return 0, err
 		}
-		for c.hand.Len() > 0 {
+		for len(c.hand)-c.handOff > 0 {
 			if err := c.handlePostHandshakeMessage(); err != nil {
 				if c.isNonBlock && err == errDataNotEnough {
 					return 0, nil
@@ -1519,7 +1531,7 @@ func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error)
 			}
 			return len(bufAppend), 0, err
 		}
-		for c.hand.Len() > 0 {
+		for len(c.hand)-c.handOff > 0 {
 			if err := c.handlePostHandshakeMessage(); err != nil {
 				if c.isNonBlock && err == errDataNotEnough {
 					return len(bufAppend), 0, nil
@@ -1552,6 +1564,9 @@ func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error)
 }
 
 func (c *Conn) release() {
+	if cap(c.hand) > 0 {
+		c.allocator.Free(c.hand)
+	}
 	if cap(c.rawInput) > 0 {
 		c.allocator.Free(c.rawInput)
 	}
