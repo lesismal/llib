@@ -66,10 +66,10 @@ type Conn struct {
 	// This field is only to be accessed with sync/atomic.
 	handshakeStatus uint32
 	// constant after handshake; protected by handshakeMutex
-	handshakeMutex sync.Mutex
-	handshakeErr   error   // error resulting from handshake
-	vers           uint16  // TLS version
-	config         *Config // configuration passed to constructor
+	// handshakeMutex sync.Mutex
+	handshakeErr error   // error resulting from handshake
+	vers         uint16  // TLS version
+	config       *Config // configuration passed to constructor
 	// handshakes counts the number of handshakes performed on the
 	// connection so far. If renegotiation is disabled then this is either
 	// zero or one.
@@ -108,6 +108,8 @@ type Conn struct {
 	// closeNotifyErr is any error from sending the alertCloseNotify record.
 	closeNotifyErr error
 
+	closeMux sync.Mutex
+	closed   bool
 	// secureRenegotiation is true if the server echoed the secure
 	// renegotiation extension. (This is meaningless as a server because
 	// renegotiation is not supported in that case.)
@@ -151,7 +153,7 @@ type Conn struct {
 	// activeCall is an atomic int32; the low bit is whether Close has
 	// been called. the rest of the bits are the number of goroutines
 	// in Conn.Write.
-	activeCall int32
+	// activeCall int32
 
 	tmp [16]byte
 
@@ -214,7 +216,7 @@ func (c *Conn) SetWriteDeadline(t time.Time) error {
 // A halfConn represents one direction of the record layer
 // connection, either sending or receiving.
 type halfConn struct {
-	sync.Mutex
+	// sync.Mutex
 
 	err     error       // first permanent error
 	version uint16      // protocol version
@@ -914,8 +916,8 @@ func (c *Conn) sendAlertLocked(err alert) error {
 
 // sendAlert sends a TLS alert message.
 func (c *Conn) sendAlert(err alert) error {
-	c.out.Lock()
-	defer c.out.Unlock()
+	// c.out.Lock()
+	// defer c.out.Unlock()
 	return c.sendAlertLocked(err)
 }
 
@@ -1099,8 +1101,8 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 // writeRecord writes a TLS record with the given type and payload to the
 // connection and updates the record layer state.
 func (c *Conn) writeRecord(typ recordType, data []byte) (int, error) {
-	c.out.Lock()
-	defer c.out.Unlock()
+	// c.out.Lock()
+	// defer c.out.Unlock()
 
 	return c.writeRecordLocked(typ, data)
 }
@@ -1216,33 +1218,25 @@ var (
 // has not yet completed. See SetDeadline, SetReadDeadline, and
 // SetWriteDeadline.
 func (c *Conn) Write(b []byte) (int, error) {
+	defer c.allocator.Free(b)
+
 	if len(b) == 0 {
 		return 0, nil
 	}
-	// interlock with Close below
-	for {
-		x := atomic.LoadInt32(&c.activeCall)
-		if x&1 != 0 {
-			c.allocator.Free(b)
-			return 0, net.ErrClosed
-		}
-		if atomic.CompareAndSwapInt32(&c.activeCall, x, x+2) {
-			break
-		}
+
+	c.closeMux.Lock()
+	defer c.closeMux.Unlock()
+
+	if c.closed {
+		return 0, net.ErrClosed
 	}
-	defer func() {
-		x := atomic.AddInt32(&c.activeCall, -2)
-		if x == 1 {
-			c.release()
-		}
-		c.allocator.Free(b)
-	}()
+
 	if err := c.Handshake(); err != nil {
 		return 0, err
 	}
 
-	c.out.Lock()
-	defer c.out.Unlock()
+	// c.out.Lock()
+	// defer c.out.Unlock()
 
 	if err := c.out.err; err != nil {
 		return 0, err
@@ -1315,8 +1309,8 @@ func (c *Conn) handleRenegotiation() error {
 		return errors.New("tls: unknown Renegotiation value")
 	}
 
-	c.handshakeMutex.Lock()
-	defer c.handshakeMutex.Unlock()
+	// c.handshakeMutex.Lock()
+	// defer c.handshakeMutex.Unlock()
 
 	atomic.StoreUint32(&c.handshakeStatus, 0)
 	if c.handshakeErr = c.clientHandshake(); c.handshakeErr == nil {
@@ -1364,8 +1358,8 @@ func (c *Conn) handleKeyUpdate(keyUpdate *keyUpdateMsg) error {
 	c.in.setTrafficSecret(cipherSuite, newSecret)
 
 	if keyUpdate.updateRequested {
-		c.out.Lock()
-		defer c.out.Unlock()
+		// c.out.Lock()
+		// defer c.out.Unlock()
 
 		msg := &keyUpdateMsg{}
 		_, err := c.writeRecordLocked(recordTypeHandshake, msg.marshal())
@@ -1384,20 +1378,16 @@ func (c *Conn) handleKeyUpdate(keyUpdate *keyUpdateMsg) error {
 
 // Append .
 func (c *Conn) Append(b []byte) (int, error) {
-	x := atomic.AddInt32(&c.activeCall, 2)
-	if x&1 != 0 {
-		atomic.AddInt32(&c.activeCall, -2)
+	c.closeMux.Lock()
+	defer c.closeMux.Unlock()
+
+	if c.closed {
 		return 0, net.ErrClosed
 	}
-	defer func() {
-		x = atomic.AddInt32(&c.activeCall, -2)
-		if x == 1 {
-			c.release()
-		}
-	}()
 
-	c.in.Lock()
-	defer c.in.Unlock()
+	// c.in.Lock()
+	// defer c.in.Unlock()
+
 	if len(b) > 0 {
 		if cap(c.rawInput) == 0 {
 			needs := len(b)
@@ -1422,17 +1412,11 @@ func (c *Conn) Append(b []byte) (int, error) {
 // has not yet completed. See SetDeadline, SetReadDeadline, and
 // SetWriteDeadline.
 func (c *Conn) Read(b []byte) (int, error) {
-	x := atomic.AddInt32(&c.activeCall, 2)
-	if x&1 != 0 {
-		atomic.AddInt32(&c.activeCall, -2)
+	c.closeMux.Lock()
+	defer c.closeMux.Unlock()
+	if c.closed {
 		return 0, net.ErrClosed
 	}
-	defer func() {
-		x = atomic.AddInt32(&c.activeCall, -2)
-		if x == 1 {
-			c.release()
-		}
-	}()
 
 	if err := c.Handshake(); err != nil {
 		if c.isNonBlock && err == errDataNotEnough {
@@ -1446,8 +1430,8 @@ func (c *Conn) Read(b []byte) (int, error) {
 		return 0, nil
 	}
 
-	c.in.Lock()
-	defer c.in.Unlock()
+	// c.in.Lock()
+	// defer c.in.Unlock()
 
 	for c.input.Len() == 0 {
 		if err := c.readRecord(); err != nil {
@@ -1488,6 +1472,85 @@ func (c *Conn) Read(b []byte) (int, error) {
 	return n, nil
 }
 
+// Append .
+func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error) {
+	c.closeMux.Lock()
+	defer c.closeMux.Unlock()
+
+	if c.closed {
+		return 0, 0, net.ErrClosed
+	}
+
+	// c.in.Lock()
+	// defer c.in.Unlock()
+
+	if len(bufAppend) > 0 {
+		if cap(c.rawInput) == 0 {
+			needs := len(bufAppend)
+			if needs < bytes.MinRead {
+				needs = bytes.MinRead
+			}
+			c.rawInput = c.allocator.Malloc(needs)[0:0]
+			c.rawInputOff = 0
+		} else if len(c.rawInput) == c.rawInputOff {
+			c.rawInput = c.rawInput[0:0]
+			c.rawInputOff = 0
+		}
+		c.rawInput = append(c.rawInput, bufAppend...)
+	}
+
+	if err := c.Handshake(); err != nil {
+		if c.isNonBlock && err == errDataNotEnough {
+			return len(bufAppend), 0, nil
+		}
+		return len(bufAppend), 0, err
+	}
+
+	if len(bufRead) == 0 {
+		// Put this after Handshake, in case people were calling
+		// Read(nil) for the side effect of the Handshake.
+		return len(bufAppend), 0, nil
+	}
+
+	for c.input.Len() == 0 {
+		if err := c.readRecord(); err != nil {
+			if c.isNonBlock && err == errDataNotEnough {
+				return len(bufAppend), 0, nil
+			}
+			return len(bufAppend), 0, err
+		}
+		for c.hand.Len() > 0 {
+			if err := c.handlePostHandshakeMessage(); err != nil {
+				if c.isNonBlock && err == errDataNotEnough {
+					return len(bufAppend), 0, nil
+				}
+				return len(bufAppend), 0, err
+			}
+		}
+	}
+
+	n, _ := c.input.Read(bufRead)
+
+	// If a close-notify alert is waiting, read it so that we can return (n,
+	// EOF) instead of (n, nil), to signal to the HTTP response reading
+	// goroutine that the connection is now closed. This eliminates a race
+	// where the HTTP response reading goroutine would otherwise not observe
+	// the EOF until its next read, by which time a client goroutine might
+	// have already tried to reuse the HTTP connection for a new request.
+	// See https://golang.org/cl/76400046 and https://golang.org/issue/3514
+	if n != 0 && c.input.Len() == 0 && len(c.rawInput)-c.rawInputOff > 0 &&
+		recordType(c.rawInput[c.rawInputOff]) == recordTypeAlert {
+		if err := c.readRecord(); err != nil {
+			if c.isNonBlock && err == errDataNotEnough {
+				return len(bufAppend), 0, nil
+			}
+			return len(bufAppend), n, err // will be io.EOF on closeNotify
+		}
+	}
+
+	return len(bufAppend), n, nil
+}
+
 func (c *Conn) release() {
 	if cap(c.rawInput) > 0 {
 		c.allocator.Free(c.rawInput)
@@ -1496,29 +1559,15 @@ func (c *Conn) release() {
 
 // Close closes the connection.
 func (c *Conn) Close() error {
-	// Interlock with Conn.Write above.
-	var x int32
-	for {
-		x = atomic.LoadInt32(&c.activeCall)
-		if x&1 != 0 {
-			return net.ErrClosed
-		}
-		if atomic.CompareAndSwapInt32(&c.activeCall, x, x|1) {
-			break
-		}
+	c.closeMux.Lock()
+	defer c.closeMux.Unlock()
+
+	if c.closed {
+		return net.ErrClosed
 	}
-	if x == 0 {
-		c.release()
-	}
-	if x != 0 {
-		// io.Writer and io.Closer should not be used concurrently.
-		// If Close is called while a Write is currently in-flight,
-		// interpret that as a sign that this Close is really just
-		// being used to break the Write and/or clean up resources and
-		// avoid sending the alertCloseNotify, which may block
-		// waiting on handshakeMutex or the c.out mutex.
-		return c.conn.Close()
-	}
+	c.closed = true
+
+	c.release()
 
 	var alertErr error
 	if c.handshakeComplete() {
@@ -1547,8 +1596,8 @@ func (c *Conn) CloseWrite() error {
 }
 
 func (c *Conn) closeNotify() error {
-	c.out.Lock()
-	defer c.out.Unlock()
+	// c.out.Lock()
+	// defer c.out.Unlock()
 
 	if !c.closeNotifySent {
 		// Set a Write Deadline to prevent possibly blocking forever.
@@ -1570,8 +1619,8 @@ func (c *Conn) closeNotify() error {
 // For control over canceling or setting a timeout on a handshake, use
 // the Dialer's DialContext method.
 func (c *Conn) Handshake() error {
-	c.handshakeMutex.Lock()
-	defer c.handshakeMutex.Unlock()
+	// c.handshakeMutex.Lock()
+	// defer c.handshakeMutex.Unlock()
 
 	if err := c.handshakeErr; err != nil {
 		return err
@@ -1580,8 +1629,8 @@ func (c *Conn) Handshake() error {
 		return nil
 	}
 
-	c.in.Lock()
-	defer c.in.Unlock()
+	// c.in.Lock()
+	// defer c.in.Unlock()
 
 	c.handshakeErr = c.handshakeFn()
 	if c.isNonBlock && c.handshakeErr == errDataNotEnough {
@@ -1605,8 +1654,8 @@ func (c *Conn) Handshake() error {
 
 // ConnectionState returns basic TLS details about the connection.
 func (c *Conn) ConnectionState() ConnectionState {
-	c.handshakeMutex.Lock()
-	defer c.handshakeMutex.Unlock()
+	// c.handshakeMutex.Lock()
+	// defer c.handshakeMutex.Unlock()
 	return c.connectionStateLocked()
 }
 
@@ -1641,8 +1690,8 @@ func (c *Conn) connectionStateLocked() ConnectionState {
 // OCSPResponse returns the stapled OCSP response from the TLS server, if
 // any. (Only valid for client connections.)
 func (c *Conn) OCSPResponse() []byte {
-	c.handshakeMutex.Lock()
-	defer c.handshakeMutex.Unlock()
+	// c.handshakeMutex.Lock()
+	// defer c.handshakeMutex.Unlock()
 
 	return c.ocspResponse
 }
@@ -1651,8 +1700,8 @@ func (c *Conn) OCSPResponse() []byte {
 // connecting to host. If so, it returns nil; if not, it returns an error
 // describing the problem.
 func (c *Conn) VerifyHostname(host string) error {
-	c.handshakeMutex.Lock()
-	defer c.handshakeMutex.Unlock()
+	// c.handshakeMutex.Lock()
+	// defer c.handshakeMutex.Unlock()
 	if !c.isClient {
 		return errors.New("tls: VerifyHostname called on TLS server connection")
 	}
