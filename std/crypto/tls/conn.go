@@ -1575,12 +1575,13 @@ func (c *Conn) release() {
 // Close closes the connection.
 func (c *Conn) Close() error {
 	c.closeMux.Lock()
-	defer c.closeMux.Unlock()
+	closed := c.closed
+	c.closed = true
+	c.closeMux.Unlock()
 
-	if c.closed {
+	if closed {
 		return net.ErrClosed
 	}
-	c.closed = true
 
 	c.release()
 
