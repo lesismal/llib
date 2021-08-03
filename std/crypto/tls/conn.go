@@ -109,6 +109,7 @@ type Conn struct {
 	closeNotifyErr error
 
 	closeMux sync.Mutex
+	hasLock  bool
 	closed   bool
 	// secureRenegotiation is true if the server echoed the secure
 	// renegotiation extension. (This is meaningless as a server because
@@ -1487,7 +1488,9 @@ func (c *Conn) Read(b []byte) (int, error) {
 // Append .
 func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error) {
 	c.closeMux.Lock()
+	c.hasLock = true
 	defer c.closeMux.Unlock()
+	defer func() { c.hasLock = false }()
 
 	if c.closed {
 		return 0, 0, net.ErrClosed
@@ -1574,10 +1577,14 @@ func (c *Conn) release() {
 
 // Close closes the connection.
 func (c *Conn) Close() error {
-	c.closeMux.Lock()
+	if !c.hasLock {
+		c.closeMux.Lock()
+	}
 	closed := c.closed
 	c.closed = true
-	c.closeMux.Unlock()
+	if !c.hasLock {
+		c.closeMux.Unlock()
+	}
 
 	if closed {
 		return net.ErrClosed
