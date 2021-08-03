@@ -1237,8 +1237,12 @@ func (c *Conn) Write(b []byte) (int, error) {
 		return 0, nil
 	}
 
-	c.closeMux.Lock()
-	defer c.closeMux.Unlock()
+	if !c.hasLock {
+		c.closeMux.Lock()
+		c.hasLock = true
+		defer c.closeMux.Unlock()
+		defer func() { c.hasLock = false }()
+	}
 
 	if c.closed {
 		return 0, net.ErrClosed
@@ -1391,8 +1395,12 @@ func (c *Conn) handleKeyUpdate(keyUpdate *keyUpdateMsg) error {
 
 // Append .
 func (c *Conn) Append(b []byte) (int, error) {
-	c.closeMux.Lock()
-	defer c.closeMux.Unlock()
+	if !c.hasLock {
+		c.closeMux.Lock()
+		c.hasLock = true
+		defer c.closeMux.Unlock()
+		defer func() { c.hasLock = false }()
+	}
 
 	if c.closed {
 		return 0, net.ErrClosed
@@ -1425,8 +1433,12 @@ func (c *Conn) Append(b []byte) (int, error) {
 // has not yet completed. See SetDeadline, SetReadDeadline, and
 // SetWriteDeadline.
 func (c *Conn) Read(b []byte) (int, error) {
-	c.closeMux.Lock()
-	defer c.closeMux.Unlock()
+	if !c.hasLock {
+		c.closeMux.Lock()
+		c.hasLock = true
+		defer c.closeMux.Unlock()
+		defer func() { c.hasLock = false }()
+	}
 	if c.closed {
 		return 0, net.ErrClosed
 	}
@@ -1487,10 +1499,12 @@ func (c *Conn) Read(b []byte) (int, error) {
 
 // Append .
 func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error) {
-	c.closeMux.Lock()
-	c.hasLock = true
-	defer c.closeMux.Unlock()
-	defer func() { c.hasLock = false }()
+	if !c.hasLock {
+		c.closeMux.Lock()
+		c.hasLock = true
+		defer c.closeMux.Unlock()
+		defer func() { c.hasLock = false }()
+	}
 
 	if c.closed {
 		return 0, 0, net.ErrClosed
