@@ -29,7 +29,7 @@ var (
 type Allocator interface {
 	Malloc(size int) []byte
 	Realloc(buf []byte, size int) []byte
-	Free(buf []byte) error
+	Free(buf []byte)
 }
 
 type NativeAllocator struct{}
@@ -50,8 +50,7 @@ func (a *NativeAllocator) Realloc(buf []byte, size int) []byte {
 }
 
 // Free .
-func (a *NativeAllocator) Free(buf []byte) error {
-	return nil
+func (a *NativeAllocator) Free(buf []byte) {
 }
 
 // A Conn represents a secured connection.
