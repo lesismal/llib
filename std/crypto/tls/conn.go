@@ -674,7 +674,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 		c.input.Reset(nil)
 
 		// Read header, payload.
-		if err := c.readFromUntil(c.conn, recordHeaderLen); err != nil {
+		if err := c.readFromUntil(c.conn, recordHeaderLen, 0); err != nil {
 			// RFC 8446, Section 6.1 suggests that EOF without an alertCloseNotify
 			// is an error, but popular web sites seem to do this, so we accept it
 			// if and only if at the record boundary.
@@ -727,7 +727,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 			return errDataNotEnough
 		}
 	} else {
-		if err := c.readFromUntil(c.conn, recordHeaderLen+n); err != nil {
+		if err := c.readFromUntil(c.conn, n, recordHeaderLen); err != nil {
 			if e, ok := err.(net.Error); !ok || !e.Temporary() {
 				c.in.setErrorLocked(err)
 			}
@@ -876,26 +876,26 @@ func (r *atLeastReader) Read(p []byte) (int, error) {
 
 // readFromUntil reads from r into c.rawInput until c.rawInput contains
 // at least n bytes or else returns an error.
-func (c *Conn) readFromUntil(r io.Reader, n int) error {
-	if len(c.rawInput)-c.rawInputOff >= n {
-		return nil
-	}
-	if len(c.rawInput) == c.rawInputOff {
-		c.rawInput = c.rawInput[0:0]
-		c.rawInputOff = 0
-	}
+func (c *Conn) readFromUntil(r io.Reader, n int, from int) error {
+	// if len(c.rawInput)-c.rawInputOff >= n {
+	// 	return nil
+	// }
+	// if len(c.rawInput) == c.rawInputOff {
+	// 	c.rawInput = c.rawInput[0:0]
+	// 	c.rawInputOff = 0
+	// }
 
-	needs := n - (len(c.rawInput) - c.rawInputOff)
+	needs := from + n - cap(c.rawInput)
 	// There might be extra input waiting on the wire. Make a best effort
 	// attempt to fetch it so that it can be used in (*Conn).Read to
 	// "predict" closeNotify alerts.
-	if cap(c.rawInput) < c.rawInputOff+needs+bytes.MinRead {
-		buf := c.allocator.Malloc(c.rawInputOff + needs + bytes.MinRead - cap(c.rawInput))
-		c.rawInput = append(c.rawInput[:], buf...)
+	if needs > 0 {
+		buf := c.allocator.Malloc(needs)
+		c.rawInput = append(c.rawInput[:cap(c.rawInput)], buf...)
 		c.allocator.Free(buf)
 	}
-	c.rawInput = c.rawInput[:c.rawInputOff+needs]
-	_, err := io.ReadFull(r, c.rawInput[c.rawInputOff:])
+	c.rawInput = c.rawInput[:from+n]
+	_, err := io.ReadFull(r, c.rawInput[from:])
 	return err
 }
 
