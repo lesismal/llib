@@ -8,8 +8,8 @@ import (
 	"sync"
 )
 
-// maxSizeForAppend represents the max size to append to a slice.
-const maxSizeForAppend = 1024 * 1024 * 4
+// maxAppendSize represents the max size to append to a slice.
+const maxAppendSize = 1024 * 1024 * 4
 
 // Pool is the default instance of []byte pool.
 // User can customize a Pool implementation and reset this instance if needed.
@@ -60,7 +60,7 @@ func (bp *bufferPool) GetN(size int) []byte {
 	pbuf := bp.Pool.Get().(*[]byte)
 	need := size - cap(*pbuf)
 	if need > 0 {
-		if need <= maxSizeForAppend {
+		if need <= maxAppendSize {
 			*pbuf = (*pbuf)[:cap(*pbuf)]
 			*pbuf = append(*pbuf, make([]byte, need)...)
 		} else {
