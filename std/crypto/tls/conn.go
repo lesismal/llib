@@ -131,14 +131,13 @@ type Conn struct {
 	isNonBlock bool
 
 	// input/output
-	buffering   bool   // whether records are buffered in sendBuf
-	sendBuf     []byte // a buffer of records waiting to be sent
-	in, out     halfConn
-	rawInputOff int
-	rawInput    []byte       // bytes.Buffer // raw input, starting with a record header
-	input       bytes.Reader // application data waiting to be read, from rawInput.Next
-	handOff     int
-	hand        []byte // bytes.Buffer // handshake data waiting to be read
+	buffering bool   // whether records are buffered in sendBuf
+	sendBuf   []byte // a buffer of records waiting to be sent
+	in, out   halfConn
+	rawInput  []byte       // bytes.Buffer // raw input, starting with a record header
+	input     bytes.Reader // application data waiting to be read, from rawInput.Next
+	handOff   int
+	hand      []byte // bytes.Buffer // handshake data waiting to be read
 
 	// bytesSent counts the bytes of application data sent.
 	// packetsSent counts packets.
@@ -632,7 +631,7 @@ func (e RecordHeaderError) Error() string { return "tls: " + e.Msg }
 func (c *Conn) newRecordHeaderError(conn net.Conn, msg string) (err RecordHeaderError) {
 	err.Msg = msg
 	err.Conn = conn
-	copy(err.RecordHeader[:], c.rawInput[c.rawInputOff:])
+	copy(err.RecordHeader[:], c.rawInput)
 	return err
 }
 
@@ -663,7 +662,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	handshakeComplete := c.handshakeComplete()
 
 	if c.isNonBlock {
-		if len(c.rawInput)-c.rawInputOff < recordHeaderLen {
+		if len(c.rawInput) < recordHeaderLen {
 			return errDataNotEnough
 		}
 	} else {
@@ -678,7 +677,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 			// RFC 8446, Section 6.1 suggests that EOF without an alertCloseNotify
 			// is an error, but popular web sites seem to do this, so we accept it
 			// if and only if at the record boundary.
-			if err == io.ErrUnexpectedEOF && len(c.rawInput)-c.rawInputOff == 0 {
+			if err == io.ErrUnexpectedEOF && len(c.rawInput) == 0 {
 				err = io.EOF
 			}
 			if e, ok := err.(net.Error); !ok || !e.Temporary() {
@@ -688,7 +687,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 		}
 	}
 
-	hdr := c.rawInput[c.rawInputOff : c.rawInputOff+recordHeaderLen]
+	hdr := c.rawInput[:recordHeaderLen]
 	typ := recordType(hdr[0])
 
 	// No valid TLS record has a type of 0x80, however SSLv2 handshakes
@@ -723,7 +722,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	}
 
 	if c.isNonBlock {
-		if len(c.rawInput)-c.rawInputOff < recordHeaderLen+n {
+		if len(c.rawInput) < recordHeaderLen+n {
 			return errDataNotEnough
 		}
 	} else {
@@ -736,11 +735,16 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	}
 
 	// Process message.
-	record := c.rawInput[c.rawInputOff : c.rawInputOff+recordHeaderLen+n]
-	c.rawInputOff += (recordHeaderLen + n)
-	if len(c.rawInput) == c.rawInputOff {
-		c.rawInput = c.rawInput[0:0]
-		c.rawInputOff = 0
+	record := c.rawInput[:recordHeaderLen+n]
+	rawInputOffset := (recordHeaderLen + n)
+	remaining := len(c.rawInput) - rawInputOffset
+
+	if remaining == 0 {
+		c.allocator.Free(c.rawInput)
+		c.rawInput = nil
+	} else {
+		copy(c.rawInput, c.rawInput[rawInputOffset:])
+		c.rawInput = c.rawInput[:remaining]
 	}
 	data, typ, err := c.in.decrypt(record)
 	if err != nil {
