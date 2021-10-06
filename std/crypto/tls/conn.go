@@ -1473,7 +1473,7 @@ func (c *Conn) Read(b []byte) (int, error) {
 	// have already tried to reuse the HTTP connection for a new request.
 	// See https://golang.org/cl/76400046 and https://golang.org/issue/3514
 	if n != 0 && c.input.Len() == 0 && len(c.rawInput) > 0 &&
-		recordType(c.rawInput) == recordTypeAlert {
+		recordType(c.rawInput[0]) == recordTypeAlert {
 		if err := c.readRecord(); err != nil {
 			if c.isNonBlock && err == errDataNotEnough {
 				return 0, nil
