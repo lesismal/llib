@@ -1410,10 +1410,8 @@ func (c *Conn) Append(b []byte) (int, error) {
 				needs = bytes.MinRead
 			}
 			c.rawInput = c.allocator.Malloc(needs)[0:0]
-			c.rawInputOff = 0
-		} else if len(c.rawInput) == c.rawInputOff {
+		} else if len(c.rawInput) == 0 {
 			c.rawInput = c.rawInput[0:0]
-			c.rawInputOff = 0
 		}
 		c.rawInput = append(c.rawInput, b...)
 	}
@@ -1474,8 +1472,8 @@ func (c *Conn) Read(b []byte) (int, error) {
 	// the EOF until its next read, by which time a client goroutine might
 	// have already tried to reuse the HTTP connection for a new request.
 	// See https://golang.org/cl/76400046 and https://golang.org/issue/3514
-	if n != 0 && c.input.Len() == 0 && len(c.rawInput)-c.rawInputOff > 0 &&
-		recordType(c.rawInput[c.rawInputOff]) == recordTypeAlert {
+	if n != 0 && c.input.Len() == 0 && len(c.rawInput) > 0 &&
+		recordType(c.rawInput) == recordTypeAlert {
 		if err := c.readRecord(); err != nil {
 			if c.isNonBlock && err == errDataNotEnough {
 				return 0, nil
@@ -1506,10 +1504,6 @@ func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error)
 				needs = bytes.MinRead
 			}
 			c.rawInput = c.allocator.Malloc(needs)[0:0]
-			c.rawInputOff = 0
-		} else if len(c.rawInput) == c.rawInputOff {
-			c.rawInput = c.rawInput[0:0]
-			c.rawInputOff = 0
 		}
 		c.rawInput = append(c.rawInput, bufAppend...)
 	}
@@ -1553,8 +1547,8 @@ func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error)
 	// the EOF until its next read, by which time a client goroutine might
 	// have already tried to reuse the HTTP connection for a new request.
 	// See https://golang.org/cl/76400046 and https://golang.org/issue/3514
-	if n != 0 && c.input.Len() == 0 && len(c.rawInput)-c.rawInputOff > 0 &&
-		recordType(c.rawInput[c.rawInputOff]) == recordTypeAlert {
+	if n != 0 && c.input.Len() == 0 && len(c.rawInput) > 0 &&
+		recordType(c.rawInput[0]) == recordTypeAlert {
 		if err := c.readRecord(); err != nil {
 			if c.isNonBlock && err == errDataNotEnough {
 				return len(bufAppend), 0, nil
