@@ -748,12 +748,8 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	if len(c.rawInput) == c.rawInputOff {
 		c.allocator.Free(c.rawInput)
 		c.rawInput = nil
-	} else {
-		remaining := len(c.rawInput) - c.rawInputOff
-		copy(c.rawInput, c.rawInput[c.rawInputOff:])
-		c.rawInput = c.rawInput[:remaining]
+		c.rawInputOff = 0
 	}
-	c.rawInputOff = 0
 
 	// Application Data messages are always protected.
 	if c.in.cipher == nil && typ == recordTypeApplicationData {
