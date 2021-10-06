@@ -738,11 +738,6 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	// Process message.
 	record := c.rawInput[c.rawInputOff : c.rawInputOff+recordHeaderLen+n]
 	c.rawInputOff += (recordHeaderLen + n)
-	if len(c.rawInput) == c.rawInputOff {
-		c.allocator.Free(c.rawInput)
-		c.rawInput = nil
-		c.rawInputOff = 0
-	}
 	data, typ, err := c.in.decrypt(record)
 	if err != nil {
 		return c.in.setErrorLocked(c.sendAlert(err.(alert)))
@@ -750,6 +745,15 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	if len(data) > maxPlaintext {
 		return c.in.setErrorLocked(c.sendAlert(alertRecordOverflow))
 	}
+	if len(c.rawInput) == c.rawInputOff {
+		c.allocator.Free(c.rawInput)
+		c.rawInput = nil
+	} else {
+		remaining := len(c.rawInput) - c.rawInputOff
+		copy(c.rawInput, c.rawInput[c.rawInputOff:])
+		c.rawInput = c.rawInput[:remaining]
+	}
+	c.rawInputOff = 0
 
 	// Application Data messages are always protected.
 	if c.in.cipher == nil && typ == recordTypeApplicationData {
