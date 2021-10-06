@@ -739,7 +739,8 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	record := c.rawInput[c.rawInputOff : c.rawInputOff+recordHeaderLen+n]
 	c.rawInputOff += (recordHeaderLen + n)
 	if len(c.rawInput) == c.rawInputOff {
-		c.rawInput = c.rawInput[0:0]
+		c.allocator.Free(c.rawInput)
+		c.rawInput = nil
 		c.rawInputOff = 0
 	}
 	data, typ, err := c.in.decrypt(record)
