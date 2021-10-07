@@ -644,6 +644,27 @@ func (c *Conn) readChangeCipherSpec() error {
 	return c.readRecordOrCCS(true)
 }
 
+func (c *Conn) ResetOrFreeBuffer() {
+	c.closeMux.Lock()
+	defer c.closeMux.Unlock()
+	if c.closed {
+		return
+	}
+
+	remain := len(c.rawInput) - c.rawInputOff
+	switch remain {
+	case 0:
+		if c.rawInput != nil {
+			c.allocator.Free(c.rawInput)
+			c.rawInput = nil
+		}
+	default:
+		copy(c.rawInput, c.rawInput[c.rawInputOff:])
+		c.rawInput = c.rawInput[:remain]
+		c.rawInputOff = 0
+	}
+}
+
 // readRecordOrCCS reads one or more TLS records from the connection and
 // updates the record layer state. Some invariants:
 //   * c.in must be locked
