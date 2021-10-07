@@ -644,6 +644,27 @@ func (c *Conn) readChangeCipherSpec() error {
 	return c.readRecordOrCCS(true)
 }
 
+func (c *Conn) ResetOrFreeBuffer() {
+	c.closeMux.Lock()
+	defer c.closeMux.Unlock()
+	if c.closed {
+		return
+	}
+
+	remain := len(c.rawInput) - c.rawInputOff
+	switch remain {
+	case 0:
+		if c.rawInput != nil {
+			c.allocator.Free(c.rawInput)
+			c.rawInput = nil
+		}
+	default:
+		copy(c.rawInput, c.rawInput[c.rawInputOff:])
+		c.rawInput = c.rawInput[:remain]
+		c.rawInputOff = 0
+	}
+}
+
 // readRecordOrCCS reads one or more TLS records from the connection and
 // updates the record layer state. Some invariants:
 //   * c.in must be locked
@@ -738,16 +759,17 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	// Process message.
 	record := c.rawInput[c.rawInputOff : c.rawInputOff+recordHeaderLen+n]
 	c.rawInputOff += (recordHeaderLen + n)
-	if len(c.rawInput) == c.rawInputOff {
-		c.rawInput = c.rawInput[0:0]
-		c.rawInputOff = 0
-	}
 	data, typ, err := c.in.decrypt(record)
 	if err != nil {
 		return c.in.setErrorLocked(c.sendAlert(err.(alert)))
 	}
 	if len(data) > maxPlaintext {
 		return c.in.setErrorLocked(c.sendAlert(alertRecordOverflow))
+	}
+	if len(c.rawInput) == c.rawInputOff {
+		c.allocator.Free(c.rawInput)
+		c.rawInput = nil
+		c.rawInputOff = 0
 	}
 
 	// Application Data messages are always protected.
