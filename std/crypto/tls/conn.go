@@ -178,9 +178,17 @@ func (c *Conn) Conn() net.Conn {
 }
 
 // ResetConn resets conn
-func (c *Conn) ResetConn(conn net.Conn, nonBlock bool) {
+func (c *Conn) ResetConn(conn net.Conn, nonBlock bool, v ...interface{}) {
 	c.conn = conn
 	c.isNonBlock = nonBlock
+	if len(v) > 0 {
+		if allocator, ok := v[0].(Allocator); ok {
+			c.allocator = allocator
+		}
+	}
+	if c.allocator == nil {
+		c.allocator = &NativeAllocator{}
+	}
 }
 
 // LocalAddr returns the local network address.

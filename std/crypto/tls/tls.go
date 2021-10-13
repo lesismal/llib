@@ -84,7 +84,8 @@ func Client(conn net.Conn, config *Config) *Conn {
 // A listener implements a network listener (net.Listener) for TLS connections.
 type listener struct {
 	net.Listener
-	config *Config
+	config    *Config
+	allocator Allocator
 }
 
 // Accept waits for and returns the next incoming TLS connection.
@@ -94,17 +95,26 @@ func (l *listener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return Server(c, l.config), nil
+	tlsConn := Server(c, l.config)
+	tlsConn.allocator = l.allocator
+	return tlsConn, nil
 }
 
 // NewListener creates a Listener which accepts connections from an inner
 // Listener and wraps each connection with Server.
 // The configuration config must be non-nil and must include
 // at least one certificate or else set GetCertificate.
-func NewListener(inner net.Listener, config *Config) net.Listener {
+func NewListener(inner net.Listener, config *Config, v ...interface{}) net.Listener {
 	l := new(listener)
 	l.Listener = inner
 	l.config = config
+
+	if len(v) > 0 {
+		if allocator, ok := v[0].(Allocator); ok {
+			l.allocator = allocator
+		}
+	}
+
 	return l
 }
 
