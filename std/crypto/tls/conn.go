@@ -1045,6 +1045,7 @@ func (c *Conn) write(data []byte) (int, error) {
 	}
 
 	n, err := c.conn.Write(data)
+	c.allocator.Free(data)
 	c.bytesSent += int64(n)
 	return n, err
 }
