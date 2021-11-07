@@ -1046,7 +1046,6 @@ func (c *Conn) write(data []byte) (int, error) {
 	}
 
 	n, err := c.conn.Write(data)
-	c.allocator.Free(data)
 	c.bytesSent += int64(n)
 	return n, err
 }
@@ -1261,6 +1260,8 @@ var (
 // has not yet completed. See SetDeadline, SetReadDeadline, and
 // SetWriteDeadline.
 func (c *Conn) Write(b []byte) (int, error) {
+	defer c.allocator.Free(b)
+
 	if len(b) == 0 {
 		return 0, nil
 	}
