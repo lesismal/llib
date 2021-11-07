@@ -166,6 +166,7 @@ type Conn struct {
 	certMsgVerified      []bool
 
 	allocator Allocator
+	session   interface{}
 }
 
 // Access to net.Conn methods.
@@ -1760,4 +1761,14 @@ func (c *Conn) VerifyHostname(host string) error {
 
 func (c *Conn) handshakeComplete() bool {
 	return atomic.LoadUint32(&c.handshakeStatus) == 1
+}
+
+// Session returns user session
+func (c *Conn) Session() interface{} {
+	return c.session
+}
+
+// SetSession sets user session
+func (c *Conn) SetSession(session interface{}) {
+	c.session = session
 }
