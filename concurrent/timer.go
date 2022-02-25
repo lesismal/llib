@@ -27,7 +27,7 @@ func NewTimer(executor func(f func())) *Timer {
 					const size = 64 << 10
 					buf := make([]byte, size)
 					buf = buf[:runtime.Stack(buf, false)]
-					log.Printf("timer exec timer failed: %v\n%v\n", err, *(*string)(unsafe.Pointer(&buf)))
+					log.Printf("timer exec failed: %v\n%v\n", err, *(*string)(unsafe.Pointer(&buf)))
 				}
 			}()
 			f()
@@ -179,18 +179,7 @@ func (t *Timer) loop() {
 				f := t.callings[0]
 				t.callings = t.callings[1:]
 				t.mux.Unlock()
-				func() {
-					defer func() {
-						err := recover()
-						if err != nil {
-							const size = 64 << 10
-							buf := make([]byte, size)
-							buf = buf[:runtime.Stack(buf, false)]
-							log.Printf("timer exec call failed: %v\n%v\n", err, *(*string)(unsafe.Pointer(&buf)))
-						}
-					}()
-					f()
-				}()
+				f()
 			}
 		case <-t.trigger.C:
 			for {
