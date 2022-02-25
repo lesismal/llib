@@ -41,6 +41,41 @@ func TestTimer(t *testing.T) {
 	{
 		t0 := time.Now()
 		chDone := make(chan struct{}, 1)
+		item := timer.AfterFunc(wait, func() {
+			chDone <- struct{}{}
+		})
+		<-chDone
+		checkTolerance(t, t0, wait, tolerance)
+
+		t0 = time.Now()
+		item.Reset(wait)
+		<-chDone
+		checkTolerance(t, t0, wait, tolerance)
+	}
+
+	{
+		t0 := time.Now()
+		chDone := make(chan struct{}, 1)
+		item := timer.AfterFunc(wait, func() {
+			chDone <- struct{}{}
+		})
+		item.Stop()
+
+		select {
+		case <-chDone:
+			t.Fatalf("stopped timer still active")
+		case <-time.After(wait * 2):
+		}
+
+		t0 = time.Now()
+		item.Reset(wait)
+		<-chDone
+		checkTolerance(t, t0, wait, tolerance)
+	}
+
+	{
+		t0 := time.Now()
+		chDone := make(chan struct{}, 1)
 		timer.AtOnce(func() {
 			chDone <- struct{}{}
 		})
