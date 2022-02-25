@@ -134,13 +134,16 @@ func (t *Timer) removeTimer(it *htimer) {
 	}
 }
 
-func (t *Timer) resetTimer(it *htimer) {
+func (t *Timer) resetTimer(it *htimer, timeout time.Duration) {
 	t.mux.Lock()
 	defer t.mux.Unlock()
 
+	now := time.Now()
+	it.expire = now.Add(timeout)
+
 	index := it.index
 	if index < 0 || index >= len(t.timers) {
-		return
+		goto CREATE
 	}
 
 	if t.timers[index] == it {
@@ -148,6 +151,14 @@ func (t *Timer) resetTimer(it *htimer) {
 		if index == 0 || it.index == 0 {
 			t.trigger.Reset(time.Until(t.timers[0].expire))
 		}
+		return
+	}
+
+CREATE:
+	it.index = len(t.timers)
+	heap.Push(&t.timers, it)
+	if t.timers[0] == it {
+		t.trigger.Reset(timeout)
 	}
 }
 
@@ -219,8 +230,7 @@ func (it *htimer) Stop() {
 }
 
 func (it *htimer) Reset(timeout time.Duration) {
-	it.expire = time.Now().Add(timeout)
-	it.parent.resetTimer(it)
+	it.parent.resetTimer(it, timeout)
 }
 
 type timerHeap []*htimer
