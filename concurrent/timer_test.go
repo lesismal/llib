@@ -31,7 +31,7 @@ func TestTimer(t *testing.T) {
 	{
 		t0 := time.Now()
 		chDone := make(chan struct{}, 1)
-		time.AfterFunc(wait, func() {
+		timer.AfterFunc(wait, func() {
 			chDone <- struct{}{}
 		})
 		<-chDone
