@@ -540,8 +540,8 @@ func sliceForAppend(c *Conn, in []byte, n int) (head, tail []byte) {
 	if total := len(in) + n; cap(in) >= total {
 		head = in[:total]
 	} else {
-		head = c.allocator.Realloc(in, total)
-		copy(head, in)
+		head = c.allocator.Append(in, make([]byte, n)...)
+		// copy(head, in)
 	}
 	tail = head[len(in):]
 	return
@@ -1057,6 +1057,7 @@ func (c *Conn) write(data []byte) (int, error) {
 	}
 
 	n, err := c.conn.Write(data)
+	c.allocator.Free(data)
 	if n > 0 {
 		c.bytesSent += int64(n)
 	}
@@ -1071,6 +1072,7 @@ func (c *Conn) flush() (int, error) {
 	}
 
 	n, err := c.conn.Write(c.sendBuf)
+	c.allocator.Free(c.sendBuf)
 	if n > 0 {
 		c.bytesSent += int64(n)
 	}
@@ -1133,9 +1135,9 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 			return n, err
 		}
 		_, err = c.write(outBuf)
-		if !c.buffering {
-			c.allocator.Free(outBuf)
-		}
+		// if !c.buffering {
+		// 	c.allocator.Free(outBuf)
+		// }
 		if err != nil {
 			return n, err
 		}
