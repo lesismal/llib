@@ -877,7 +877,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 			c.hand = c.allocator.Malloc(len(data))[0:0]
 			c.handOff = 0
 		}
-		c.hand = append(c.hand, data...)
+		c.hand = c.allocator.Append(c.hand, data...)
 	}
 
 	return nil
@@ -1617,17 +1617,21 @@ func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error)
 func (c *Conn) release() {
 	if cap(c.hand) > 0 {
 		c.allocator.Free(c.hand)
+		c.hand = nil
 	}
 	if cap(c.rawInput) > 0 {
 		c.allocator.Free(c.rawInput)
+		c.rawInput = nil
 	}
 }
 
 // Close closes the connection.
 func (c *Conn) Close() error {
 	c.closeMux.Lock()
+
 	closed := c.closed
 	c.closed = true
+
 	c.closeMux.Unlock()
 
 	if closed {
