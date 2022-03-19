@@ -1049,7 +1049,6 @@ func (c *Conn) write(data []byte) (int, error) {
 	if c.buffering {
 		if len(c.sendBuf) == 0 {
 			c.sendBuf = data
-			copy(c.sendBuf, data)
 		} else {
 			c.sendBuf = c.allocator.Append(c.sendBuf, data...)
 			c.allocator.Free(data)
@@ -1058,7 +1057,9 @@ func (c *Conn) write(data []byte) (int, error) {
 	}
 
 	n, err := c.conn.Write(data)
-	c.bytesSent += int64(n)
+	if n > 0 {
+		c.bytesSent += int64(n)
+	}
 	return n, err
 }
 
@@ -1070,7 +1071,9 @@ func (c *Conn) flush() (int, error) {
 	}
 
 	n, err := c.conn.Write(c.sendBuf)
-	c.bytesSent += int64(n)
+	if n > 0 {
+		c.bytesSent += int64(n)
+	}
 	c.sendBuf = nil
 	return n, err
 }
