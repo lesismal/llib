@@ -13,45 +13,44 @@ var (
 )
 
 type call struct {
-	mux sync.RWMutex
-	ret interface{}
-	err error
+	done chan struct{}
+	ret  interface{}
+	err  error
 }
 
 // Batch .
 type Batch struct {
-	_mux      sync.Mutex
-	_callings map[interface{}]*call
+	mux      sync.Mutex
+	callings map[interface{}]*call
 }
 
 // Do .
-func (o *Batch) Do(key interface{}, f func() (interface{}, error)) (interface{}, error) {
-	o._mux.Lock()
-	c, ok := o._callings[key]
+func (batch *Batch) Do(key interface{}, f func() (interface{}, error)) (interface{}, error) {
+	batch.mux.Lock()
+	c, ok := batch.callings[key]
 	if ok {
-		o._mux.Unlock()
-		c.mux.RLock()
-		c.mux.RUnlock()
+		batch.mux.Unlock()
+		<-c.done
 		return c.ret, c.err
 	}
 
-	c = &call{}
-	c.mux.Lock()
-	o._callings[key] = c
-	o._mux.Unlock()
-	c.ret, c.err = f()
-	c.mux.Unlock()
+	c = &call{done: make(chan struct{})}
+	batch.callings[key] = c
+	defer close(c.done)
 
-	o._mux.Lock()
-	delete(o._callings, key)
-	o._mux.Unlock()
+	batch.mux.Unlock()
+	c.ret, c.err = f()
+
+	batch.mux.Lock()
+	delete(batch.callings, key)
+	batch.mux.Unlock()
 
 	return c.ret, c.err
 }
 
 // NewBatch .
 func NewBatch() *Batch {
-	return &Batch{_callings: map[interface{}]*call{}}
+	return &Batch{callings: map[interface{}]*call{}}
 }
 
 // Do .
