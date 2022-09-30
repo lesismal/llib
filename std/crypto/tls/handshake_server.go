@@ -768,6 +768,7 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 		var sigType uint8
 		var sigHash crypto.Hash
 		if c.vers >= VersionTLS12 {
+			fmt.Println(certReq)
 			if !isSupportedSignatureAlgorithm(certVerify.signatureAlgorithm, certReq.supportedSignatureAlgorithms) {
 				c.sendAlert(alertIllegalParameter)
 				c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2ReadHandshake3
