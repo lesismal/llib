@@ -626,8 +626,9 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 				return err
 			}
 		}
-
+		fmt.Println(c.config.ClientAuth)
 		if c.config.ClientAuth >= RequestClientCert {
+			fmt.Println("init certReq")
 			// Request a client certificate
 			certReq = new(certificateRequestMsg)
 			certReq.certificateTypes = []byte{
