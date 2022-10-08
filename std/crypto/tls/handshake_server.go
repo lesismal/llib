@@ -107,14 +107,15 @@ func (c *Conn) serverHandshake() error {
 		}
 		return hs.handshake()
 	}
-
 	hs := c.hs
+	fmt.Println("111: ",  hs)
 	if hs == nil {
 		hs = &serverHandshakeState{
 			c:           c,
 			clientHello: c.clientHello,
 		}
 		c.hs = hs
+		fmt.Println("118: ",c.hs)
 	}
 	fmt.Println("handshake tls1.2")
 	return hs.handshake()
