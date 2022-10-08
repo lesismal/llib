@@ -108,14 +108,12 @@ func (c *Conn) serverHandshake() error {
 		return hs.handshake()
 	}
 	hs := c.hs
-	fmt.Println("111: ",  hs)
 	if hs == nil {
 		hs = &serverHandshakeState{
 			c:           c,
 			clientHello: c.clientHello,
 		}
 		c.hs = hs
-		fmt.Println("118: ",c.hs)
 	}
 	fmt.Println("handshake tls1.2")
 	return hs.handshake()
@@ -135,7 +133,6 @@ func (hs *serverHandshakeState) handshake() error {
 		hs.err = err
 		return err
 	}
-	log.Println("handshake")
 
 	// For an overview of TLS handshaking, see RFC 5246, Section 7.3.
 	if hs.checkForResumption() {
@@ -218,7 +215,7 @@ func (hs *serverHandshakeState) handshake() error {
 	atomic.StoreUint32(&c.handshakeStatus, 1)
 
 	c.handshakeStatusAsync = stateServerHandshakeHandshakeDone
-
+	log.Println("handshake done")
 	return nil
 }
 

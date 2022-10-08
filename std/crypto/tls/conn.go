@@ -1701,7 +1701,7 @@ func (c *Conn) Handshake() error {
 
 	// c.in.Lock()
 	// defer c.in.Unlock()
-
+	fmt.Println("handshake")
 	c.handshakeErr = c.handshakeFn()
 	fmt.Println("handshake complete")
 	if c.isNonBlock && c.handshakeErr == errDataNotEnough {
