@@ -93,6 +93,7 @@ func (c *Conn) serverHandshake() error {
 		if err != nil {
 			return err
 		}
+		fmt.Println("state change to read client hello")
 		c.handshakeStatusAsync = stateServerHandshakeReadClientHello
 	}
 	if c.vers == VersionTLS13 {
