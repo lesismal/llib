@@ -124,14 +124,16 @@ func (hs *serverHandshakeState) handshake() error {
 	if hs.err != nil && hs.err != errDataNotEnough {
 		return hs.err
 	}
-
+	fmt.Println("process client hello")
 	if err := hs.processClientHello(); err != nil {
 		hs.err = err
 		return err
 	}
+	fmt.Println("handshake")
 
 	// For an overview of TLS handshaking, see RFC 5246, Section 7.3.
 	if hs.checkForResumption() {
+		fmt.Println("resume")
 		// The client has included a session ticket and so we do an abbreviated handshake.
 		c.didResume = true
 		if err := hs.doResumeHandshake(); err != nil {
