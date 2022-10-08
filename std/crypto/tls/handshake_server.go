@@ -163,10 +163,12 @@ func (hs *serverHandshakeState) handshake() error {
 	} else {
 		// The client didn't include a session ticket, or it wasn't
 		// valid so we do a full handshake.
+		fmt.Println("before pick cipher suite")
 		if err := hs.pickCipherSuite(); err != nil {
 			hs.err = err
 			return err
 		}
+		fmt.Println("pick cipher suite")
 		if err := hs.doFullHandshake(); err != nil {
 			hs.err = err
 			if err != errDataNotEnough {
