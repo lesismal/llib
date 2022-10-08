@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -1562,7 +1561,6 @@ func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error)
 		}
 		c.rawInput = c.allocator.Append(c.rawInput, bufAppend...)
 	}
-	log.Println("handshake")
 	if err := c.Handshake(); err != nil {
 		if c.isNonBlock && err == errDataNotEnough {
 			return len(bufAppend), 0, nil

@@ -88,6 +88,7 @@ func (c *Conn) serverHandshake() error {
 	var err error
 
 	if c.handshakeStatusAsync < stateServerHandshakeReadClientHello {
+		fmt.Println("read client hello")
 		c.clientHello, err = c.readClientHello()
 		if err != nil {
 			return err
@@ -114,6 +115,7 @@ func (c *Conn) serverHandshake() error {
 		}
 		c.hs = hs
 	}
+	fmt.Println("handshake tls1.2")
 	return hs.handshake()
 }
 
