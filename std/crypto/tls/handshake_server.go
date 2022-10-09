@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"log"
 	"sync/atomic"
 	"time"
 )
@@ -118,14 +117,12 @@ func (c *Conn) serverHandshake() error {
 
 func (hs *serverHandshakeState) handshake() error {
 	c := hs.c
-	log.Println("check handshake status before")
 	if c.handshakeStatusAsync >= stateServerHandshakeHandshakeDone {
 		return nil
 	}
 	if hs.err != nil && hs.err != errDataNotEnough {
 		return hs.err
 	}
-	log.Println("process client hello")
 	if err := hs.processClientHello(); err != nil {
 		hs.err = err
 		return err
@@ -133,7 +130,6 @@ func (hs *serverHandshakeState) handshake() error {
 
 	// For an overview of TLS handshaking, see RFC 5246, Section 7.3.
 	if hs.checkForResumption() {
-		log.Println("resume")
 		// The client has included a session ticket and so we do an abbreviated handshake.
 		c.didResume = true
 		if err := hs.doResumeHandshake(); err != nil {
@@ -165,24 +161,20 @@ func (hs *serverHandshakeState) handshake() error {
 	} else {
 		// The client didn't include a session ticket, or it wasn't
 		// valid so we do a full handshake.
-		log.Println("before pick cipher suite")
 		if err := hs.pickCipherSuite(); err != nil {
 			hs.err = err
 			return err
 		}
-		log.Println("pick cipher suite")
 		if err := hs.doFullHandshake(); err != nil {
 			hs.err = err
 			if err != errDataNotEnough {
 			}
 			return err
 		}
-		log.Println("full handshake")
 		if err := hs.establishKeys(); err != nil {
 			hs.err = err
 			return err
 		}
-		log.Println("establish keys")
 		if err := hs.readFinished(c.clientFinished[:]); err != nil {
 			hs.err = err
 			if err != errDataNotEnough {
@@ -195,24 +187,20 @@ func (hs *serverHandshakeState) handshake() error {
 			hs.err = err
 			return err
 		}
-		log.Println("send session ticket2")
 		if err := hs.sendFinished2(nil); err != nil {
 			hs.err = err
 			return err
 		}
-		log.Println("send finished2")
 		if _, err := c.flush(); err != nil {
 			hs.err = err
 			return err
 		}
-		log.Println("flush")
 	}
 
 	c.ekm = ekmFromMasterSecret(c.vers, hs.suite, hs.masterSecret, hs.clientHello.random, hs.hello.random)
 	atomic.StoreUint32(&c.handshakeStatus, 1)
 
 	c.handshakeStatusAsync = stateServerHandshakeHandshakeDone
-	log.Println("handshake done")
 	return nil
 }
 
