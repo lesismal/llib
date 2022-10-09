@@ -802,6 +802,11 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 		}
 
 		signed := hs.finishedHash.hashForClientCertificate(sigType, sigHash, hs.masterSecret)
+		if pub == nil {
+			if len(c.peerCertificates) > 0 {
+				pub = c.peerCertificates[0].PublicKey
+			}
+		}
 		if err := verifyHandshakeSignature(sigType, pub, sigHash, signed, certVerify.signature); err != nil {
 			c.sendAlert(alertDecryptError)
 			c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2ReadHandshake3
