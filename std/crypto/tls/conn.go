@@ -1561,7 +1561,6 @@ func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error)
 		}
 		c.rawInput = c.allocator.Append(c.rawInput, bufAppend...)
 	}
-
 	if err := c.Handshake(); err != nil {
 		if c.isNonBlock && err == errDataNotEnough {
 			return len(bufAppend), 0, nil
@@ -1702,8 +1701,9 @@ func (c *Conn) Handshake() error {
 
 	// c.in.Lock()
 	// defer c.in.Unlock()
-
+	fmt.Println("handshake")
 	c.handshakeErr = c.handshakeFn()
+	fmt.Println("handshake complete")
 	if c.isNonBlock && c.handshakeErr == errDataNotEnough {
 		c.handshakeErr = nil
 		return errDataNotEnough
