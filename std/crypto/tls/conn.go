@@ -688,12 +688,14 @@ func (c *Conn) ResetOrFreeBuffer() {
 
 // readRecordOrCCS reads one or more TLS records from the connection and
 // updates the record layer state. Some invariants:
-//   * c.in must be locked
-//   * c.input must be empty
+//   - c.in must be locked
+//   - c.input must be empty
+//
 // During the handshake one and only one of the following will happen:
 //   - c.hand grows
 //   - c.in.changeCipherSpec is called
 //   - an error is returned
+//
 // After the handshake one and only one of the following will happen:
 //   - c.hand grows
 //   - c.input is set
@@ -1561,7 +1563,6 @@ func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error)
 		}
 		c.rawInput = c.allocator.Append(c.rawInput, bufAppend...)
 	}
-
 	if err := c.Handshake(); err != nil {
 		if c.isNonBlock && err == errDataNotEnough {
 			return len(bufAppend), 0, nil
@@ -1702,7 +1703,6 @@ func (c *Conn) Handshake() error {
 
 	// c.in.Lock()
 	// defer c.in.Unlock()
-
 	c.handshakeErr = c.handshakeFn()
 	if c.isNonBlock && c.handshakeErr == errDataNotEnough {
 		c.handshakeErr = nil
