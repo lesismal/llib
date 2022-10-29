@@ -540,7 +540,7 @@ func sliceForAppend(c *Conn, in []byte, n int) (head, tail []byte) {
 	if total := len(in) + n; cap(in) >= total {
 		head = in[:total]
 	} else {
-		head = c.allocator.Append(in, make([]byte, n)...)
+		head = append(in, make([]byte, n)...)
 		// copy(head, in)
 	}
 	tail = head[len(in):]
@@ -1049,17 +1049,18 @@ func (c *Conn) maxPayloadSizeForWrite(typ recordType) int {
 
 func (c *Conn) write(data []byte) (int, error) {
 	if c.buffering {
-		if len(c.sendBuf) == 0 {
-			c.sendBuf = data
+		if cap(c.sendBuf) == 0 {
+			c.sendBuf = c.allocator.Malloc(len(data))
+			copy(c.sendBuf, data)
 		} else {
 			c.sendBuf = c.allocator.Append(c.sendBuf, data...)
-			c.allocator.Free(data)
+			// c.allocator.Free(data)
 		}
 		return len(data), nil
 	}
 
 	n, err := c.conn.Write(data)
-	c.allocator.Free(data)
+	// c.allocator.Free(data)
 	if n > 0 {
 		c.bytesSent += int64(n)
 	}
@@ -1105,16 +1106,16 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 	// }()
 
 	var n int
-	var outBuf []byte
+	var outBuf = make([]byte, recordHeaderLen)
+	var maxPayload = c.maxPayloadSizeForWrite(typ)
 	// var outBuf = c.allocator.Malloc(recordHeaderLen + len(data))[0:0]
 	for len(data) > 0 {
 		m := len(data)
-		if maxPayload := c.maxPayloadSizeForWrite(typ); m > maxPayload {
+		if m > maxPayload {
 			m = maxPayload
 		}
 
-		outBuf = c.allocator.Malloc(recordHeaderLen)
-		// _, outBuf = sliceForAppend(outBuf[:0], recordHeaderLen)
+		_, outBuf = sliceForAppend(c, outBuf[:0], recordHeaderLen)
 		outBuf[0] = byte(typ)
 		vers := c.vers
 		if vers == 0 {
@@ -1134,6 +1135,7 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 		var err error
 		outBuf, err = c.out.encrypt(c, outBuf, data[:m], c.config.rand())
 		if err != nil {
+			c.allocator.Free(outBuf)
 			return n, err
 		}
 		_, err = c.write(outBuf)
