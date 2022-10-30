@@ -540,7 +540,7 @@ func sliceForAppend(c *Conn, in []byte, n int) (head, tail []byte) {
 	if total := len(in) + n; cap(in) >= total {
 		head = in[:total]
 	} else {
-		head = c.allocator.Append(in, make([]byte, n)...)
+		head = append(in, make([]byte, n)...)
 		// copy(head, in)
 	}
 	tail = head[len(in):]
@@ -551,7 +551,7 @@ func sliceForAppend(c *Conn, in []byte, n int) (head, tail []byte) {
 // appends it to record, which must already contain the record header.
 func (hc *halfConn) encrypt(conn *Conn, record, payload []byte, rand io.Reader) ([]byte, error) {
 	if hc.cipher == nil {
-		return conn.allocator.Append(record, payload...), nil
+		return append(record, payload...), nil
 	}
 
 	var explicitNonce []byte
@@ -589,10 +589,10 @@ func (hc *halfConn) encrypt(conn *Conn, record, payload []byte, rand io.Reader) 
 		}
 
 		if hc.version == VersionTLS13 {
-			record = conn.allocator.Append(record, payload...)
+			record = append(record, payload...)
 
 			// Encrypt the actual ContentType and replace the plaintext one.
-			record = conn.allocator.Append(record, record[0])
+			record = append(record, record[0])
 			record[0] = byte(recordTypeApplicationData)
 
 			n := len(payload) + 1 + c.Overhead()
@@ -1093,6 +1093,18 @@ var outBufPool = sync.Pool{
 // writeRecordLocked writes a TLS record with the given type and payload to the
 // connection and updates the record layer state.
 func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
+	// outBufPtr := outBufPool.Get().(*[]byte)
+	// outBuf := *outBufPtr
+	// defer func() {
+	// 	// You might be tempted to simplify this by just passing &outBuf to Put,
+	// 	// but that would make the local copy of the outBuf slice header escape
+	// 	// to the heap, causing an allocation. Instead, we keep around the
+	// 	// pointer to the slice header returned by Get, which is already on the
+	// 	// heap, and overwrite and return that.
+	// 	*outBufPtr = outBuf
+	// 	outBufPool.Put(outBufPtr)
+	// }()
+
 	var n int
 	var maxPayload = c.maxPayloadSizeForWrite(typ)
 	var outBuf = c.allocator.Malloc(recordHeaderLen + len(data))[0:0]
