@@ -46,9 +46,7 @@ func (a *NativeAllocator) Realloc(buf []byte, size int) []byte {
 	if size <= cap(buf) {
 		return buf[:size]
 	}
-	newBuf := make([]byte, size)
-	copy(newBuf, buf)
-	return newBuf
+	return append(buf, make([]byte, size)...)
 }
 
 // Append .
@@ -1093,22 +1091,20 @@ var outBufPool = sync.Pool{
 // writeRecordLocked writes a TLS record with the given type and payload to the
 // connection and updates the record layer state.
 func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
-	// outBufPtr := outBufPool.Get().(*[]byte)
-	// outBuf := *outBufPtr
-	// defer func() {
-	// 	// You might be tempted to simplify this by just passing &outBuf to Put,
-	// 	// but that would make the local copy of the outBuf slice header escape
-	// 	// to the heap, causing an allocation. Instead, we keep around the
-	// 	// pointer to the slice header returned by Get, which is already on the
-	// 	// heap, and overwrite and return that.
-	// 	*outBufPtr = outBuf
-	// 	outBufPool.Put(outBufPtr)
-	// }()
+	outBufPtr := outBufPool.Get().(*[]byte)
+	outBuf := *outBufPtr
+	defer func() {
+		// You might be tempted to simplify this by just passing &outBuf to Put,
+		// but that would make the local copy of the outBuf slice header escape
+		// to the heap, causing an allocation. Instead, we keep around the
+		// pointer to the slice header returned by Get, which is already on the
+		// heap, and overwrite and return that.
+		*outBufPtr = outBuf
+		outBufPool.Put(outBufPtr)
+	}()
 
 	var n int
-	var outBuf = make([]byte, recordHeaderLen)
 	var maxPayload = c.maxPayloadSizeForWrite(typ)
-	// var outBuf = c.allocator.Malloc(recordHeaderLen + len(data))[0:0]
 	for len(data) > 0 {
 		m := len(data)
 		if m > maxPayload {
@@ -1135,13 +1131,9 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 		var err error
 		outBuf, err = c.out.encrypt(c, outBuf, data[:m], c.config.rand())
 		if err != nil {
-			c.allocator.Free(outBuf)
 			return n, err
 		}
 		_, err = c.write(outBuf)
-		// if !c.buffering {
-		// 	c.allocator.Free(outBuf)
-		// }
 		if err != nil {
 			return n, err
 		}
