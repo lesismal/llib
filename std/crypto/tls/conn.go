@@ -1135,13 +1135,9 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 		var err error
 		outBuf, err = c.out.encrypt(c, outBuf, data[:m], c.config.rand())
 		if err != nil {
-			c.allocator.Free(outBuf)
 			return n, err
 		}
 		_, err = c.write(outBuf)
-		// if !c.buffering {
-		// 	c.allocator.Free(outBuf)
-		// }
 		if err != nil {
 			return n, err
 		}
