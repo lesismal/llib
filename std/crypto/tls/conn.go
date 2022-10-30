@@ -46,9 +46,9 @@ func (a *NativeAllocator) Realloc(buf []byte, size int) []byte {
 	if size <= cap(buf) {
 		return buf[:size]
 	}
-	newBuf := make([]byte, size)
-	copy(newBuf, buf)
-	return newBuf
+	// newBuf := make([]byte, size)
+	// copy(newBuf, buf)
+	return append(buf, make([]byte, size)...)
 }
 
 // Append .
@@ -1107,7 +1107,6 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 
 	var n int
 	var maxPayload = c.maxPayloadSizeForWrite(typ)
-	defer c.allocator.Free(outBuf)
 	for len(data) > 0 {
 		m := len(data)
 		if m > maxPayload {
