@@ -1093,21 +1093,20 @@ var outBufPool = sync.Pool{
 // writeRecordLocked writes a TLS record with the given type and payload to the
 // connection and updates the record layer state.
 func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
-	// outBufPtr := outBufPool.Get().(*[]byte)
-	// outBuf := *outBufPtr
-	// defer func() {
-	// 	// You might be tempted to simplify this by just passing &outBuf to Put,
-	// 	// but that would make the local copy of the outBuf slice header escape
-	// 	// to the heap, causing an allocation. Instead, we keep around the
-	// 	// pointer to the slice header returned by Get, which is already on the
-	// 	// heap, and overwrite and return that.
-	// 	*outBufPtr = outBuf
-	// 	outBufPool.Put(outBufPtr)
-	// }()
+	outBufPtr := outBufPool.Get().(*[]byte)
+	outBuf := *outBufPtr
+	defer func() {
+		// You might be tempted to simplify this by just passing &outBuf to Put,
+		// but that would make the local copy of the outBuf slice header escape
+		// to the heap, causing an allocation. Instead, we keep around the
+		// pointer to the slice header returned by Get, which is already on the
+		// heap, and overwrite and return that.
+		*outBufPtr = outBuf
+		outBufPool.Put(outBufPtr)
+	}()
 
 	var n int
 	var maxPayload = c.maxPayloadSizeForWrite(typ)
-	var outBuf = c.allocator.Malloc(recordHeaderLen + len(data))[0:0]
 	defer c.allocator.Free(outBuf)
 	for len(data) > 0 {
 		m := len(data)
