@@ -41,7 +41,7 @@ func (a *PoolAllocator) Malloc(size int) []byte {
 	bufPtr := bufferPool.Get().(*[]byte)
 	buf := *bufPtr
 	if cap(buf) < size {
-		buf = append(buf, make([]byte, size-cap(buf))...)
+		buf = append(buf[:], make([]byte, size-cap(buf))...)
 	}
 	return buf[:size]
 }
