@@ -232,6 +232,14 @@ func (c *Conn) SetWriteDeadline(t time.Time) error {
 	return c.conn.SetWriteDeadline(t)
 }
 
+func (c *Conn) ClientHello() *clientHelloMsg {
+	return c.clientHello
+}
+
+func (c *Conn) ServerHello() *serverHelloMsg {
+	return c.serverHello
+}
+
 // A halfConn represents one direction of the record layer
 // connection, either sending or receiving.
 type halfConn struct {
