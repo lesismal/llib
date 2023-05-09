@@ -677,6 +677,19 @@ func (c *Conn) readChangeCipherSpec() error {
 	return c.readRecordOrCCS(true)
 }
 
+func (c *Conn) ResetRawInput() {
+	c.closeMux.Lock()
+	defer c.closeMux.Unlock()
+	if c.closed {
+		return
+	}
+
+	if c.rawInput != nil {
+		c.rawInput = c.rawInput[0:0]
+	}
+	c.rawInputOff = 0
+}
+
 func (c *Conn) ResetOrFreeBuffer() {
 	c.closeMux.Lock()
 	defer c.closeMux.Unlock()
