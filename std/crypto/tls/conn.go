@@ -22,8 +22,7 @@ import (
 )
 
 var (
-	defaultReadBufferSize = 4096
-	errDataNotEnough      = errors.New("data not enough")
+	errDataNotEnough = errors.New("data not enough")
 )
 
 type Allocator interface {
@@ -34,39 +33,33 @@ type Allocator interface {
 	Free(buf []byte)
 }
 
-type PoolAllocator struct{}
+type NativeAllocator struct{}
 
 // Malloc .
-func (a *PoolAllocator) Malloc(size int) []byte {
-	bufPtr := bufferPool.Get().(*[]byte)
-	buf := *bufPtr
-	if cap(buf) < size {
-		buf = append(buf[:cap(buf)], make([]byte, size-cap(buf))...)
-	}
-	return buf[:size]
+func (a *NativeAllocator) Malloc(size int) []byte {
+	return make([]byte, size)
 }
 
 // Realloc .
-func (a *PoolAllocator) Realloc(buf []byte, size int) []byte {
+func (a *NativeAllocator) Realloc(buf []byte, size int) []byte {
 	if size <= cap(buf) {
 		return buf[:size]
 	}
-	return append(buf, make([]byte, size)...)
+	return append(buf[:cap(buf)], make([]byte, size-cap(buf))...)
 }
 
 // Append .
-func (a *PoolAllocator) Append(buf []byte, more ...byte) []byte {
+func (a *NativeAllocator) Append(buf []byte, more ...byte) []byte {
 	return append(buf, more...)
 }
 
 // AppendString .
-func (a *PoolAllocator) AppendString(buf []byte, more string) []byte {
+func (a *NativeAllocator) AppendString(buf []byte, more string) []byte {
 	return append(buf, more...)
 }
 
 // Free .
-func (a *PoolAllocator) Free(buf []byte) {
-	bufferPool.Put(&buf)
+func (a *NativeAllocator) Free(buf []byte) {
 }
 
 // A Conn represents a secured connection.
@@ -204,7 +197,7 @@ func (c *Conn) ResetConn(conn net.Conn, nonBlock bool, v ...interface{}) {
 		}
 	}
 	if c.allocator == nil {
-		c.allocator = &PoolAllocator{}
+		c.allocator = &NativeAllocator{}
 	}
 }
 
@@ -1108,18 +1101,17 @@ func (c *Conn) flush() (int, error) {
 	return n, err
 }
 
-// bufferPool pools the record-sized scratch buffers used by writeRecordLocked.
-var bufferPool = sync.Pool{
+// outBufPool pools the record-sized scratch buffers used by writeRecordLocked.
+var outBufPool = sync.Pool{
 	New: func() interface{} {
-		buf := make([]byte, 512)
-		return &buf
+		return new([]byte)
 	},
 }
 
 // writeRecordLocked writes a TLS record with the given type and payload to the
 // connection and updates the record layer state.
 func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
-	outBufPtr := bufferPool.Get().(*[]byte)
+	outBufPtr := outBufPool.Get().(*[]byte)
 	outBuf := *outBufPtr
 	defer func() {
 		// You might be tempted to simplify this by just passing &outBuf to Put,
@@ -1128,7 +1120,7 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 		// pointer to the slice header returned by Get, which is already on the
 		// heap, and overwrite and return that.
 		*outBufPtr = outBuf
-		bufferPool.Put(outBufPtr)
+		outBufPool.Put(outBufPtr)
 	}()
 
 	var n int
