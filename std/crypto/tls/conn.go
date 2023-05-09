@@ -22,8 +22,7 @@ import (
 )
 
 var (
-	defaultReadBufferSize = 4096
-	errDataNotEnough      = errors.New("data not enough")
+	errDataNotEnough = errors.New("data not enough")
 )
 
 type Allocator interface {
@@ -38,12 +37,7 @@ type PoolAllocator struct{}
 
 // Malloc .
 func (a *PoolAllocator) Malloc(size int) []byte {
-	bufPtr := bufferPool.Get().(*[]byte)
-	buf := *bufPtr
-	if cap(buf) < size {
-		buf = append(buf[:cap(buf)], make([]byte, size-cap(buf))...)
-	}
-	return buf[:size]
+	return make([]byte, size)
 }
 
 // Realloc .
@@ -51,7 +45,7 @@ func (a *PoolAllocator) Realloc(buf []byte, size int) []byte {
 	if size <= cap(buf) {
 		return buf[:size]
 	}
-	return append(buf, make([]byte, size)...)
+	return append(buf[:cap(buf)], make([]byte, size-cap(buf))...)
 }
 
 // Append .
