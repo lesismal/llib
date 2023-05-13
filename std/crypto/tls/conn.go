@@ -247,7 +247,7 @@ func (c *Conn) ServerHello() *serverHelloMsg {
 // A halfConn represents one direction of the record layer
 // connection, either sending or receiving.
 type halfConn struct {
-	// sync.Mutex
+	sync.Mutex
 
 	err     error       // first permanent error
 	version uint16      // protocol version
@@ -1302,26 +1302,22 @@ var (
 // has not yet completed. See SetDeadline, SetReadDeadline, and
 // SetWriteDeadline.
 func (c *Conn) Write(b []byte) (int, error) {
-	// defer c.allocator.Free(b)
-
 	if len(b) == 0 {
 		return 0, nil
 	}
-
 	c.closeMux.Lock()
-	defer c.closeMux.Unlock()
-
 	if c.closed {
+		c.closeMux.Unlock()
 		return 0, net.ErrClosed
 	}
+	c.closeMux.Unlock()
 
 	if err := c.Handshake(); err != nil {
 		return 0, err
 	}
 
-	// c.out.Lock()
-	// defer c.out.Unlock()
-
+	c.out.Lock()
+	defer c.out.Unlock()
 	if err := c.out.err; err != nil {
 		return 0, err
 	}
@@ -1329,7 +1325,6 @@ func (c *Conn) Write(b []byte) (int, error) {
 	if !c.handshakeComplete() {
 		return 0, alertInternalError
 	}
-
 	if c.closeNotifySent {
 		return 0, errShutdown
 	}
@@ -1353,8 +1348,8 @@ func (c *Conn) Write(b []byte) (int, error) {
 			m, b = 1, b[1:]
 		}
 	}
-
 	n, err := c.writeRecordLocked(recordTypeApplicationData, b)
+
 	return n + m, c.out.setErrorLocked(err)
 }
 
@@ -1497,10 +1492,11 @@ func (c *Conn) Append(b []byte) (int, error) {
 // SetWriteDeadline.
 func (c *Conn) Read(b []byte) (int, error) {
 	c.closeMux.Lock()
-	defer c.closeMux.Unlock()
 	if c.closed {
+		c.closeMux.Unlock()
 		return 0, net.ErrClosed
 	}
+	c.closeMux.Unlock()
 
 	if err := c.Handshake(); err != nil {
 		if c.isNonBlock && err == errDataNotEnough {
@@ -1514,8 +1510,8 @@ func (c *Conn) Read(b []byte) (int, error) {
 		return 0, nil
 	}
 
-	// c.in.Lock()
-	// defer c.in.Unlock()
+	c.in.Lock()
+	defer c.in.Unlock()
 
 	for c.input.Len() == 0 {
 		if err := c.readRecord(); err != nil {
@@ -1659,7 +1655,6 @@ func (c *Conn) Close() error {
 	}
 
 	c.release()
-
 	var alertErr error
 	if c.handshakeComplete() {
 		if err := c.closeNotify(); err != nil {
