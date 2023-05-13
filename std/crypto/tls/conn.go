@@ -187,6 +187,11 @@ func (c *Conn) Conn() net.Conn {
 	return c.conn
 }
 
+// IsNonblock.
+func (c *Conn) IsNonBlock() bool {
+	return c.isNonBlock
+}
+
 // ResetConn resets conn
 func (c *Conn) ResetConn(conn net.Conn, nonBlock bool, v ...interface{}) {
 	c.conn = conn
