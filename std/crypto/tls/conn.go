@@ -668,7 +668,9 @@ func (e RecordHeaderError) Error() string { return "tls: " + e.Msg }
 func (c *Conn) newRecordHeaderError(conn net.Conn, msg string) (err RecordHeaderError) {
 	err.Msg = msg
 	err.Conn = conn
-	copy(err.RecordHeader[:], (*c.rawInput)[c.rawInputOff:])
+	if c.rawInput != nil {
+		copy(err.RecordHeader[:], (*c.rawInput)[c.rawInputOff:])
+	}
 	return err
 }
 
@@ -700,7 +702,10 @@ func (c *Conn) ResetOrFreeBuffer() {
 		return
 	}
 
-	remain := len(*c.rawInput) - c.rawInputOff
+	remain := 0
+	if c.rawInput != nil {
+		remain = len(*c.rawInput) - c.rawInputOff
+	}
 	switch remain {
 	case 0:
 		if c.rawInput != nil {
@@ -735,7 +740,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	handshakeComplete := c.handshakeComplete()
 
 	if c.isNonBlock {
-		if len(*c.rawInput)-c.rawInputOff < recordHeaderLen {
+		if c.rawInput == nil || (len(*c.rawInput)-c.rawInputOff < recordHeaderLen) {
 			return errDataNotEnough
 		}
 	} else {
@@ -750,7 +755,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 			// RFC 8446, Section 6.1 suggests that EOF without an alertCloseNotify
 			// is an error, but popular web sites seem to do this, so we accept it
 			// if and only if at the record boundary.
-			if err == io.ErrUnexpectedEOF && len(*c.rawInput)-c.rawInputOff == 0 {
+			if err == io.ErrUnexpectedEOF && (c.rawInput == nil || (len(*c.rawInput)-c.rawInputOff == 0)) {
 				err = io.EOF
 			}
 			if e, ok := err.(net.Error); !ok || !e.Temporary() {
@@ -795,7 +800,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	}
 
 	if c.isNonBlock {
-		if len(*c.rawInput)-c.rawInputOff < recordHeaderLen+n {
+		if c.rawInput == nil || (len(*c.rawInput)-c.rawInputOff < recordHeaderLen+n) {
 			return errDataNotEnough
 		}
 	} else {
@@ -834,7 +839,9 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	}
 
 	// Handshake messages MUST NOT be interleaved with other record types in TLS 1.3.
-	if c.vers == VersionTLS13 && typ != recordTypeHandshake && len(*c.hand)-c.handOff > 0 {
+	if c.vers == VersionTLS13 &&
+		typ != recordTypeHandshake &&
+		(c.hand != nil && len(*c.hand)-c.handOff > 0) {
 		return c.in.setErrorLocked(c.sendAlert(alertUnexpectedMessage))
 	}
 
@@ -867,7 +874,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 			return c.in.setErrorLocked(c.sendAlert(alertDecodeError))
 		}
 		// Handshake messages are not allowed to fragment across the CCS.
-		if len(*c.hand)-c.handOff > 0 {
+		if c.hand != nil && len(*c.hand)-c.handOff > 0 {
 			return c.in.setErrorLocked(c.sendAlert(alertUnexpectedMessage))
 		}
 		// In TLS 1.3, change_cipher_spec records are ignored until the
@@ -1077,7 +1084,7 @@ func (c *Conn) maxPayloadSizeForWrite(typ recordType) int {
 
 func (c *Conn) write(data []byte) (int, error) {
 	if c.buffering {
-		if cap(*c.sendBuf) == 0 {
+		if c.sendBuf == nil || cap(*c.sendBuf) == 0 {
 			c.sendBuf = c.allocator.Malloc(len(data))
 			copy(*c.sendBuf, data)
 		} else {
@@ -1098,7 +1105,7 @@ func (c *Conn) write(data []byte) (int, error) {
 func (c *Conn) flush() (int, error) {
 	c.buffering = false
 
-	if len(*c.sendBuf) == 0 {
+	if c.sendBuf == nil || len(*c.sendBuf) == 0 {
 		return 0, nil
 	}
 
@@ -1193,13 +1200,13 @@ func (c *Conn) writeRecord(typ recordType, data []byte) (int, error) {
 // the record layer.
 func (c *Conn) readHandshake() (interface{}, error) {
 	if c.isNonBlock {
-		if len(*c.hand)-c.handOff < 4 {
+		if c.hand == nil || len(*c.hand)-c.handOff < 4 {
 			if err := c.readRecord(); err != nil {
 				return nil, err
 			}
 		}
 	} else {
-		for len(*c.hand)-c.handOff < 4 {
+		for c.hand == nil || len(*c.hand)-c.handOff < 4 {
 			if err := c.readRecord(); err != nil {
 				return nil, err
 			}
@@ -1473,7 +1480,7 @@ func (c *Conn) Append(b []byte) (int, error) {
 	// defer c.in.Unlock()
 
 	if len(b) > 0 {
-		if cap(*c.rawInput) == 0 {
+		if c.rawInput == nil || cap(*c.rawInput) == 0 {
 			needs := len(b)
 			if needs < bytes.MinRead {
 				needs = bytes.MinRead
@@ -1526,7 +1533,7 @@ func (c *Conn) Read(b []byte) (int, error) {
 			}
 			return 0, err
 		}
-		for len(*c.hand)-c.handOff > 0 {
+		for c.hand != nil && len(*c.hand)-c.handOff > 0 {
 			if err := c.handlePostHandshakeMessage(); err != nil {
 				if c.isNonBlock && err == errDataNotEnough {
 					return 0, nil
@@ -1545,7 +1552,8 @@ func (c *Conn) Read(b []byte) (int, error) {
 	// the EOF until its next read, by which time a client goroutine might
 	// have already tried to reuse the HTTP connection for a new request.
 	// See https://golang.org/cl/76400046 and https://golang.org/issue/3514
-	if n != 0 && c.input.Len() == 0 && len(*c.rawInput)-c.rawInputOff > 0 &&
+	if n != 0 && c.input.Len() == 0 &&
+		(c.rawInput != nil && len(*c.rawInput)-c.rawInputOff > 0) &&
 		recordType((*c.rawInput)[c.rawInputOff]) == recordTypeAlert {
 		if err := c.readRecord(); err != nil {
 			if c.isNonBlock && err == errDataNotEnough {
@@ -1571,7 +1579,7 @@ func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error)
 	// defer c.in.Unlock()
 
 	if len(bufAppend) > 0 {
-		if cap(*c.rawInput) == 0 {
+		if c.rawInput == nil || cap(*c.rawInput) == 0 {
 			needs := len(bufAppend)
 			if needs < bytes.MinRead {
 				needs = bytes.MinRead
@@ -1605,7 +1613,7 @@ func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error)
 			}
 			return len(bufAppend), 0, err
 		}
-		for len(*c.hand)-c.handOff > 0 {
+		for c.hand != nil && len(*c.hand)-c.handOff > 0 {
 			if err := c.handlePostHandshakeMessage(); err != nil {
 				if c.isNonBlock && err == errDataNotEnough {
 					return len(bufAppend), 0, nil
@@ -1624,7 +1632,8 @@ func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error)
 	// the EOF until its next read, by which time a client goroutine might
 	// have already tried to reuse the HTTP connection for a new request.
 	// See https://golang.org/cl/76400046 and https://golang.org/issue/3514
-	if n != 0 && c.input.Len() == 0 && len(*c.rawInput)-c.rawInputOff > 0 &&
+	if n != 0 && c.input.Len() == 0 &&
+		(c.rawInput != nil && len(*c.rawInput)-c.rawInputOff > 0) &&
 		recordType((*c.rawInput)[c.rawInputOff]) == recordTypeAlert {
 		if err := c.readRecord(); err != nil {
 			if c.isNonBlock && err == errDataNotEnough {
@@ -1638,11 +1647,11 @@ func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error)
 }
 
 func (c *Conn) release() {
-	if cap(*c.hand) > 0 {
+	if c.hand != nil && cap(*c.hand) > 0 {
 		c.allocator.Free(c.hand)
 		c.hand = nil
 	}
-	if cap(*c.rawInput) > 0 {
+	if c.rawInput != nil && cap(*c.rawInput) > 0 {
 		c.allocator.Free(c.rawInput)
 		c.rawInput = nil
 	}
