@@ -758,7 +758,8 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 			if err == io.ErrUnexpectedEOF && (c.rawInput == nil || (len(*c.rawInput)-c.rawInputOff == 0)) {
 				err = io.EOF
 			}
-			if e, ok := err.(net.Error); !ok || !e.Temporary() {
+			var ne net.Error
+			if ok := errors.As(err, &ne); !ok || !ne.Timeout() {
 				c.in.setErrorLocked(err)
 			}
 			return err
