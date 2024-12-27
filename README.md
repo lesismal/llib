@@ -1,4 +1,4 @@
-# llib - [lesismal](https://github.com/lesismal)'s lib 
+# llib - [nbio](https://github.com/lesismal/nbio)'s dependency lib.
 
 [![GoDoc][1]][2] [![MIT licensed][3]][4] [![Go Version][5]][6]
 
@@ -9,4 +9,11 @@
 [5]: https://img.shields.io/badge/go-%3E%3D1.16-30dff3?style=flat-square&logo=go
 [6]: https://github.com/lesismal/llib
 
-Less Is More :smile:
+
+## Features
+- [x] Blocking/NonBlocking TLS interface(rewritten from a copy of golang 1.6 std's tls).
+
+
+## Why this lib?
+- [nbio](https://github.com/lesismal/nbio) itself depends on the golang std and llib only and keeps the dependencies clean.
+- If new features of [nbio](https://github.com/lesismal/nbio) needs to depend on 3rd libs, it will be implemented in llib too.
