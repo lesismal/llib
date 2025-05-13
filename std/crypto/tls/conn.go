@@ -1209,7 +1209,7 @@ func (c *Conn) writeRecord(typ recordType, data []byte) (int, error) {
 // the record layer.
 func (c *Conn) readHandshake() (interface{}, error) {
 	if c.isNonBlock {
-		if c.hand == nil || len(*c.hand)-c.handOff < 4 {
+		for c.hand == nil || len(*c.hand)-c.handOff < 4 {
 			if err := c.readRecord(); err != nil {
 				return nil, err
 			}
@@ -1229,7 +1229,7 @@ func (c *Conn) readHandshake() (interface{}, error) {
 		return nil, c.in.setErrorLocked(fmt.Errorf("tls: handshake message of length %d bytes exceeds maximum of %d bytes", n, maxHandshake))
 	}
 	if c.isNonBlock {
-		if len(*c.hand)-c.handOff < 4+n {
+		for len(*c.hand)-c.handOff < 4+n {
 			if err := c.readRecord(); err != nil {
 				return nil, err
 			}
