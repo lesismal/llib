@@ -826,7 +826,7 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 	}
 
 	defer func() {
-		if len(*c.rawInput) == c.rawInputOff {
+		if c.rawInput != nil && len(*c.rawInput) == c.rawInputOff {
 			c.allocator.Free(c.rawInput)
 			c.rawInput = nil
 			c.rawInputOff = 0
