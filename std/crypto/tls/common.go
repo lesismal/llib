@@ -178,7 +178,30 @@ var directSigning crypto.Hash = 0
 // the code advertises as supported in a TLS 1.2+ ClientHello and in a TLS 1.2+
 // CertificateRequest. The two fields are merged to match with TLS 1.3.
 // Note that in TLS 1.2, the ECDSA algorithms are not constrained to P-256, etc.
+//
+// SHA-1 signature algorithms are not included: TLS 1.3 removed them, and
+// RFC 9155 deprecated them in TLS 1.2 (as did Go 1.25).
 var supportedSignatureAlgorithms = []SignatureScheme{
+	PSSWithSHA256,
+	ECDSAWithP256AndSHA256,
+	Ed25519,
+	PSSWithSHA384,
+	PSSWithSHA512,
+	PKCS1WithSHA256,
+	PKCS1WithSHA384,
+	PKCS1WithSHA512,
+	ECDSAWithP384AndSHA384,
+	ECDSAWithP521AndSHA512,
+}
+
+// supportedSignatureAlgorithmsCert contains the algorithms advertised in the
+// signature_algorithms_cert extension. Unlike supportedSignatureAlgorithms, it
+// includes SHA-1, because it's more likely that something on our side will be
+// willing to accept a *-with-SHA1 certificate (e.g. with a custom
+// VerifyConnection or by a direct match with the CertPool), than that the
+// peer would have a better certificate but is just choosing not to send it.
+// crypto/x509 will refuse to verify important SHA-1 signatures anyway.
+var supportedSignatureAlgorithmsCert = []SignatureScheme{
 	PSSWithSHA256,
 	ECDSAWithP256AndSHA256,
 	Ed25519,
