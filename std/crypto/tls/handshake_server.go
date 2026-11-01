@@ -392,7 +392,7 @@ func negotiateALPN(serverProtos, clientProtos []string) (string, error) {
 func supportsECDHE(c *Config, supportedCurves []CurveID, supportedPoints []uint8) bool {
 	supportsCurve := false
 	for _, curve := range supportedCurves {
-		if c.supportsCurve(curve) {
+		if c.supportsCurveTLS12(curve) {
 			supportsCurve = true
 			break
 		}

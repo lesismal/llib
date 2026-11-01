@@ -12,6 +12,7 @@ import (
 	"io"
 	"math/big"
 
+	"github.com/lesismal/llib/std/crypto/internal/mlkem768"
 	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
@@ -196,4 +197,93 @@ func (p *x25519Parameters) SharedKey(peerPublicKey []byte) []byte {
 		return nil
 	}
 	return sharedKey
+}
+
+// x25519MLKEM768Parameters holds the client's private keys for an
+// X25519MLKEM768 key share, see draft-ietf-tls-ecdhe-mlkem. The X25519
+// component is also used for the fallback X25519 key share, as allowed by
+// draft-ietf-tls-hybrid-design-09, Section 3.2.
+type x25519MLKEM768Parameters struct {
+	x25519 *x25519Parameters
+	mlkem  *mlkem768.DecapsulationKey768
+}
+
+const x25519PublicKeySize = 32
+
+func generateX25519MLKEM768Parameters(rand io.Reader) (*x25519MLKEM768Parameters, error) {
+	ecdhe, err := generateECDHEParameters(rand, X25519)
+	if err != nil {
+		return nil, err
+	}
+	seed := make([]byte, mlkem768.SeedSize)
+	if _, err := io.ReadFull(rand, seed); err != nil {
+		return nil, err
+	}
+	dk, err := mlkem768.NewDecapsulationKey768(seed)
+	if err != nil {
+		return nil, err
+	}
+	return &x25519MLKEM768Parameters{x25519: ecdhe.(*x25519Parameters), mlkem: dk}, nil
+}
+
+func (p *x25519MLKEM768Parameters) CurveID() CurveID {
+	return X25519MLKEM768
+}
+
+// PublicKey returns the client key share: the ML-KEM-768 encapsulation key
+// followed by the X25519 public key.
+func (p *x25519MLKEM768Parameters) PublicKey() []byte {
+	ek := p.mlkem.EncapsulationKey().Bytes()
+	share := make([]byte, 0, len(ek)+x25519PublicKeySize)
+	share = append(share, ek...)
+	return append(share, p.x25519.PublicKey()...)
+}
+
+// SharedKey takes the server key share, the ML-KEM-768 ciphertext followed by
+// the X25519 public key, and returns the ML-KEM-768 shared secret followed by
+// the X25519 shared secret.
+func (p *x25519MLKEM768Parameters) SharedKey(peerPublicKey []byte) []byte {
+	if len(peerPublicKey) != mlkem768.CiphertextSize768+x25519PublicKeySize {
+		return nil
+	}
+	mlkemShared, err := p.mlkem.Decapsulate(peerPublicKey[:mlkem768.CiphertextSize768])
+	if err != nil {
+		return nil
+	}
+	ecdheShared := p.x25519.SharedKey(peerPublicKey[mlkem768.CiphertextSize768:])
+	if ecdheShared == nil {
+		return nil
+	}
+	sharedKey := make([]byte, 0, len(mlkemShared)+len(ecdheShared))
+	sharedKey = append(sharedKey, mlkemShared...)
+	return append(sharedKey, ecdheShared...)
+}
+
+// x25519MLKEM768ServerSharedSecret processes an X25519MLKEM768 client key
+// share and returns the shared secret and the server key share.
+func x25519MLKEM768ServerSharedSecret(rand io.Reader, clientKeyShare []byte) (sharedKey, serverKeyShare []byte, err error) {
+	if len(clientKeyShare) != mlkem768.EncapsulationKeySize768+x25519PublicKeySize {
+		return nil, nil, errors.New("tls: invalid X25519MLKEM768 client key share")
+	}
+	ek, err := mlkem768.NewEncapsulationKey768(clientKeyShare[:mlkem768.EncapsulationKeySize768])
+	if err != nil {
+		return nil, nil, errors.New("tls: invalid X25519MLKEM768 client key share")
+	}
+	ecdhe, err := generateECDHEParameters(rand, X25519)
+	if err != nil {
+		return nil, nil, err
+	}
+	ecdheShared := ecdhe.SharedKey(clientKeyShare[mlkem768.EncapsulationKeySize768:])
+	if ecdheShared == nil {
+		return nil, nil, errors.New("tls: invalid X25519MLKEM768 client key share")
+	}
+	mlkemShared, ciphertext := ek.Encapsulate()
+
+	sharedKey = make([]byte, 0, len(mlkemShared)+len(ecdheShared))
+	sharedKey = append(sharedKey, mlkemShared...)
+	sharedKey = append(sharedKey, ecdheShared...)
+	serverKeyShare = make([]byte, 0, len(ciphertext)+x25519PublicKeySize)
+	serverKeyShare = append(serverKeyShare, ciphertext...)
+	serverKeyShare = append(serverKeyShare, ecdhe.PublicKey()...)
+	return sharedKey, serverKeyShare, nil
 }

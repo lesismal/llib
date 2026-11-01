@@ -121,14 +121,32 @@ func (c *Conn) makeClientHello() (*clientHelloMsg, ecdheParameters, error) {
 		hello.cipherSuites = append(hello.cipherSuites, defaultCipherSuitesTLS13()...)
 
 		curveID := config.curvePreferences()[0]
-		if _, ok := curveForCurveID(curveID); curveID != X25519 && !ok {
-			return nil, nil, errors.New("tls: CurvePreferences includes unsupported curve")
+		if curveID == X25519MLKEM768 {
+			hybrid, err := generateX25519MLKEM768Parameters(config.rand())
+			if err != nil {
+				return nil, nil, err
+			}
+			params = hybrid
+			hello.keyShares = []keyShare{{group: X25519MLKEM768, data: hybrid.PublicKey()}}
+			// If X25519 is enabled too, send it as a fallback key share,
+			// reusing the X25519 key of the hybrid, as allowed by
+			// draft-ietf-tls-hybrid-design-09, Section 3.2.
+			if config.supportsCurve(X25519) {
+				hello.keyShares = append(hello.keyShares, keyShare{group: X25519, data: hybrid.x25519.PublicKey()})
+			}
+		} else {
+			if _, ok := curveForCurveID(curveID); curveID != X25519 && !ok {
+				return nil, nil, errors.New("tls: CurvePreferences includes unsupported curve")
+			}
+			params, err = generateECDHEParameters(config.rand(), curveID)
+			if err != nil {
+				return nil, nil, err
+			}
+			hello.keyShares = []keyShare{{group: curveID, data: params.PublicKey()}}
 		}
-		params, err = generateECDHEParameters(config.rand(), curveID)
-		if err != nil {
-			return nil, nil, err
-		}
-		hello.keyShares = []keyShare{{group: curveID, data: params.PublicKey()}}
+	} else {
+		// Don't advertise key exchanges that can't be used before TLS 1.3.
+		hello.supportedCurves = config.curvePreferencesTLS12()
 	}
 
 	return hello, params, nil
