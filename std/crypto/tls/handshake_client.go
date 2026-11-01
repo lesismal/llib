@@ -114,6 +114,7 @@ func (c *Conn) makeClientHello() (*clientHelloMsg, ecdheParameters, error) {
 
 	if hello.vers >= VersionTLS12 {
 		hello.supportedSignatureAlgorithms = supportedSignatureAlgorithms
+		hello.supportedSignatureAlgorithmsCert = supportedSignatureAlgorithmsCert
 	}
 
 	var params ecdheParameters

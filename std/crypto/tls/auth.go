@@ -230,13 +230,23 @@ func signatureSchemesForCertificate(version uint16, cert *Certificate) []Signatu
 // versions that support signature algorithms, so TLS 1.2 and 1.3.
 func selectSignatureScheme(vers uint16, c *Certificate, peerAlgs []SignatureScheme) (SignatureScheme, error) {
 	supportedAlgs := signatureSchemesForCertificate(vers, c)
+	// Filter out SHA-1 signature algorithms, which TLS 1.3 removed and
+	// RFC 9155 deprecated in TLS 1.2.
+	filteredAlgs := supportedAlgs[:0:0]
+	for _, sigAlg := range supportedAlgs {
+		if !isDisabledSignatureAlgorithm(sigAlg) {
+			filteredAlgs = append(filteredAlgs, sigAlg)
+		}
+	}
+	supportedAlgs = filteredAlgs
 	if len(supportedAlgs) == 0 {
 		return 0, unsupportedCertificateError(c)
 	}
 	if len(peerAlgs) == 0 && vers == VersionTLS12 {
 		// For TLS 1.2, if the client didn't send signature_algorithms then we
-		// can assume that it supports SHA1. See RFC 5246, Section 7.4.1.4.1.
-		peerAlgs = []SignatureScheme{PKCS1WithSHA1, ECDSAWithSHA1}
+		// could assume that it supports SHA1 (RFC 5246, Section 7.4.1.4.1), but
+		// RFC 9155 made signature_algorithms mandatory in TLS 1.2.
+		return 0, errors.New("tls: missing signature_algorithms from TLS 1.2 peer")
 	}
 	// Pick signature scheme in the peer's preference order, as our
 	// preference order is not configurable.
@@ -246,6 +256,14 @@ func selectSignatureScheme(vers uint16, c *Certificate, peerAlgs []SignatureSche
 		}
 	}
 	return 0, errors.New("tls: peer doesn't support any of the certificate's signature algorithms")
+}
+
+// isDisabledSignatureAlgorithm reports whether s must not be used to sign or
+// verify handshake messages. SHA-1 signature algorithms are disabled in TLS
+// 1.2 and 1.3 (TLS 1.0 and 1.1 don't negotiate signature algorithms).
+func isDisabledSignatureAlgorithm(s SignatureScheme) bool {
+	_, sigHash, err := typeAndHashFromSignatureScheme(s)
+	return err != nil || sigHash == crypto.SHA1
 }
 
 // unsupportedCertificateError returns a helpful error for certificates with
