@@ -136,6 +136,9 @@ type Conn struct {
 
 	haveVers  bool // version has been negotiated
 	didResume bool // whether this connection was a session resumption
+	// extMasterSecret is true if the master secret of this connection was
+	// derived using Extended Master Secret (RFC 7627).
+	extMasterSecret bool
 
 	// closeNotifySent is true if the Conn attempted to send an
 	// alertCloseNotify record.
@@ -1793,7 +1796,7 @@ func (c *Conn) connectionStateLocked() ConnectionState {
 	state.VerifiedChains = c.verifiedChains
 	state.SignedCertificateTimestamps = c.scts
 	state.OCSPResponse = c.ocspResponse
-	if !c.didResume && c.vers != VersionTLS13 {
+	if (!c.didResume || c.extMasterSecret) && c.vers != VersionTLS13 {
 		if c.clientFinishedIsFirst {
 			state.TLSUnique = c.clientFinished[:]
 		} else {

@@ -74,6 +74,7 @@ func (c *Conn) makeClientHello() (*clientHelloMsg, ecdheParameters, error) {
 		supportedCurves:              config.curvePreferences(),
 		supportedPoints:              []uint8{pointFormatUncompressed},
 		secureRenegotiationSupported: true,
+		extendedMasterSecret:         true,
 		alpnProtocols:                config.NextProtos,
 		supportedVersions:            supportedVersions,
 	}
@@ -143,6 +144,7 @@ func (c *Conn) clientHandshake() (err error) {
 	// This may be a renegotiation handshake, in which case some fields
 	// need to be reset.
 	c.didResume = false
+	c.extMasterSecret = false
 
 	hello, ecdheParams, err := c.makeClientHello()
 	if err != nil {
@@ -611,6 +613,19 @@ func (hs *clientHandshakeState) doFullHandshake() error {
 		}
 	}
 
+	// The Extended Master Secret session hash covers the transcript up to and
+	// including the ClientKeyExchange, so derive it before CertificateVerify.
+	if hs.serverHello.extendedMasterSecret {
+		c.extMasterSecret = true
+		hs.masterSecret = extMasterFromPreMasterSecret(c.vers, hs.suite, preMasterSecret, hs.finishedHash.Sum())
+	} else {
+		hs.masterSecret = masterFromPreMasterSecret(c.vers, hs.suite, preMasterSecret, hs.hello.random, hs.serverHello.random)
+	}
+	if err := c.config.writeKeyLog(keyLogLabelTLS12, hs.hello.random, hs.masterSecret); err != nil {
+		c.sendAlert(alertInternalError)
+		return errors.New("tls: failed to write to key log: " + err.Error())
+	}
+
 	if chainToSend != nil && len(chainToSend.Certificate) > 0 {
 		certVerify := &certificateVerifyMsg{}
 
@@ -657,12 +672,6 @@ func (hs *clientHandshakeState) doFullHandshake() error {
 		if _, err := c.writeRecord(recordTypeHandshake, certVerify.marshal()); err != nil {
 			return err
 		}
-	}
-
-	hs.masterSecret = masterFromPreMasterSecret(c.vers, hs.suite, preMasterSecret, hs.hello.random, hs.serverHello.random)
-	if err := c.config.writeKeyLog(keyLogLabelTLS12, hs.hello.random, hs.masterSecret); err != nil {
-		c.sendAlert(alertInternalError)
-		return errors.New("tls: failed to write to key log: " + err.Error())
 	}
 
 	hs.finishedHash.discardHandshakeBuffer()
@@ -757,8 +766,15 @@ func (hs *clientHandshakeState) processServerHello() (bool, error) {
 		return false, errors.New("tls: server resumed a session with a different cipher suite")
 	}
 
+	// RFC 7627, Section 5.3
+	if hs.session.extMasterSecret != hs.serverHello.extendedMasterSecret {
+		c.sendAlert(alertHandshakeFailure)
+		return false, errors.New("tls: server resumed a session with a different EMS extension")
+	}
+
 	// Restore masterSecret, peerCerts, and ocspResponse from previous state
 	hs.masterSecret = hs.session.masterSecret
+	c.extMasterSecret = hs.session.extMasterSecret
 	c.peerCertificates = hs.session.serverCertificates
 	c.verifiedChains = hs.session.verifiedChains
 	c.ocspResponse = hs.session.ocspResponse
@@ -821,6 +837,7 @@ func (hs *clientHandshakeState) readSessionTicket() error {
 		vers:               c.vers,
 		cipherSuite:        hs.suite.id,
 		masterSecret:       hs.masterSecret,
+		extMasterSecret:    c.extMasterSecret,
 		serverCertificates: c.peerCertificates,
 		verifiedChains:     c.verifiedChains,
 		receivedAt:         c.config.time(),

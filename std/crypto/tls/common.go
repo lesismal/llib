@@ -93,6 +93,7 @@ const (
 	extensionSignatureAlgorithms     uint16 = 13
 	extensionALPN                    uint16 = 16
 	extensionSCT                     uint16 = 18
+	extensionExtendedMasterSecret    uint16 = 23
 	extensionSessionTicket           uint16 = 35
 	extensionPreSharedKey            uint16 = 41
 	extensionEarlyData               uint16 = 42
@@ -358,6 +359,7 @@ type ClientSessionState struct {
 	vers               uint16                // TLS version negotiated for the session
 	cipherSuite        uint16                // Ciphersuite negotiated for the session
 	masterSecret       []byte                // Full handshake MasterSecret, or TLS 1.3 resumption_master_secret
+	extMasterSecret    bool                  // Whether the TLS 1.2 MasterSecret was derived using Extended Master Secret (RFC 7627)
 	serverCertificates []*x509.Certificate   // Certificate chain presented by the server
 	verifiedChains     [][]*x509.Certificate // Certificate chains we built for verification
 	receivedAt         time.Time             // When the session ticket was received from the server
