@@ -149,7 +149,7 @@ type ecdheKeyAgreement struct {
 func (ka *ecdheKeyAgreement) generateServerKeyExchange(config *Config, cert *Certificate, clientHello *clientHelloMsg, hello *serverHelloMsg) (*serverKeyExchangeMsg, error) {
 	var curveID CurveID
 	for _, c := range clientHello.supportedCurves {
-		if config.supportsCurve(c) {
+		if config.supportsCurveTLS12(c) {
 			curveID = c
 			break
 		}

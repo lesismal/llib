@@ -88,6 +88,7 @@ type Conn struct {
 	// zero or one.
 	handshakes       int
 	cipherSuite      uint16
+	curveID          CurveID
 	ocspResponse     []byte   // stapled OCSP response
 	scts             [][]byte // signed certificate timestamps from server
 	peerCertificates []*x509.Certificate
@@ -1792,6 +1793,7 @@ func (c *Conn) connectionStateLocked() ConnectionState {
 	state.NegotiatedProtocolIsMutual = true
 	state.ServerName = c.serverName
 	state.CipherSuite = c.cipherSuite
+	state.CurveID = c.curveID
 	state.PeerCertificates = c.peerCertificates
 	state.VerifiedChains = c.verifiedChains
 	state.SignedCertificateTimestamps = c.scts

@@ -115,7 +115,8 @@ const (
 // https://www.iana.org/assignments/tls-parameters/tls-parameters.xml#tls-parameters-8.
 //
 // In TLS 1.3, this type is called NamedGroup, but at this time this library
-// only supports Elliptic Curve based groups. See RFC 8446, Section 4.2.7.
+// only supports Elliptic Curve based groups and the X25519MLKEM768 hybrid. See
+// RFC 8446, Section 4.2.7.
 type CurveID uint16
 
 const (
@@ -123,7 +124,17 @@ const (
 	CurveP384 CurveID = 24
 	CurveP521 CurveID = 25
 	X25519    CurveID = 29
+
+	// X25519MLKEM768 is the hybrid post-quantum key exchange combining X25519
+	// and ML-KEM-768, as specified in draft-ietf-tls-ecdhe-mlkem. It can only
+	// be negotiated in TLS 1.3.
+	X25519MLKEM768 CurveID = 4588
 )
+
+// isTLS13OnlyKeyExchange reports whether curve can only be used in TLS 1.3.
+func isTLS13OnlyKeyExchange(curve CurveID) bool {
+	return curve == X25519MLKEM768
+}
 
 // TLS 1.3 Key Share. See RFC 8446, Section 4.2.8.
 type keyShare struct {
@@ -253,6 +264,11 @@ type ConnectionState struct {
 	// CipherSuite is the cipher suite negotiated for the connection (e.g.
 	// TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, TLS_AES_128_GCM_SHA256).
 	CipherSuite uint16
+
+	// CurveID is the key exchange mechanism used for the connection. It is
+	// only set for TLS 1.3 handshakes (including resumptions using
+	// psk_dhe_ke), and is zero otherwise.
+	CurveID CurveID
 
 	// NegotiatedProtocol is the application protocol negotiated with ALPN.
 	NegotiatedProtocol string
@@ -695,7 +711,9 @@ type Config struct {
 	// CurvePreferences contains the elliptic curves that will be used in
 	// an ECDHE handshake, in preference order. If empty, the default will
 	// be used. The client will use the first preference as the type for
-	// its key share in TLS 1.3. This may change in the future.
+	// its key share in TLS 1.3. If that is X25519MLKEM768 and X25519 is also
+	// enabled, the client additionally sends an X25519 key share reusing the
+	// same X25519 key. X25519MLKEM768 is only used in TLS 1.3.
 	CurvePreferences []CurveID
 
 	// DynamicRecordSizingDisabled disables adaptive sizing of TLS records.
@@ -1006,7 +1024,7 @@ func supportedVersionsFromMax(maxVersion uint16) []uint16 {
 	return versions
 }
 
-var defaultCurvePreferences = []CurveID{X25519, CurveP256, CurveP384, CurveP521}
+var defaultCurvePreferences = []CurveID{X25519MLKEM768, X25519, CurveP256, CurveP384, CurveP521}
 
 func (c *Config) curvePreferences() []CurveID {
 	if c == nil || len(c.CurvePreferences) == 0 {
@@ -1022,6 +1040,25 @@ func (c *Config) supportsCurve(curve CurveID) bool {
 		}
 	}
 	return false
+}
+
+// supportsCurveTLS12 reports whether curve is enabled and usable for a
+// pre-TLS 1.3 ECDHE key exchange.
+func (c *Config) supportsCurveTLS12(curve CurveID) bool {
+	return !isTLS13OnlyKeyExchange(curve) && c.supportsCurve(curve)
+}
+
+// curvePreferencesTLS12 returns the curve preferences without the key
+// exchanges that are only allowed in TLS 1.3.
+func (c *Config) curvePreferencesTLS12() []CurveID {
+	prefs := c.curvePreferences()
+	curves := make([]CurveID, 0, len(prefs))
+	for _, curve := range prefs {
+		if !isTLS13OnlyKeyExchange(curve) {
+			curves = append(curves, curve)
+		}
+	}
+	return curves
 }
 
 // mutualVersion returns the protocol version to use given the advertised
