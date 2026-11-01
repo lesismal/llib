@@ -26,6 +26,10 @@ type sessionState struct {
 	masterSecret []byte // opaque master_secret<1..2^16-1>;
 	// struct { opaque certificate<1..2^24-1> } Certificate;
 	certificates [][]byte // Certificate certificate_list<0..2^24-1>;
+	// uint8 ext_master_secret; added for RFC 7627. Tickets issued before it
+	// was added lack this byte and are rejected, falling back to a full
+	// handshake.
+	extMasterSecret bool
 
 	// usedOldKey is true if the ticket from which this session came from
 	// was encrypted with an older key and thus should be refreshed.
@@ -47,6 +51,11 @@ func (m *sessionState) marshal() ([]byte, error) {
 			})
 		}
 	})
+	if m.extMasterSecret {
+		b.AddUint8(1)
+	} else {
+		b.AddUint8(0)
+	}
 	return b.Bytes()
 }
 
@@ -70,6 +79,18 @@ func (m *sessionState) unmarshal(data []byte) bool {
 			return false
 		}
 		m.certificates = append(m.certificates, cert)
+	}
+	var extMasterSecret uint8
+	if !s.ReadUint8(&extMasterSecret) {
+		return false
+	}
+	switch extMasterSecret {
+	case 0:
+		m.extMasterSecret = false
+	case 1:
+		m.extMasterSecret = true
+	default:
+		return false
 	}
 	return s.Empty()
 }

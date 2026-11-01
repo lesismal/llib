@@ -85,6 +85,7 @@ type clientHelloMsg struct {
 	supportedSignatureAlgorithmsCert []SignatureScheme
 	secureRenegotiationSupported     bool
 	secureRenegotiation              []byte
+	extendedMasterSecret             bool
 	alpnProtocols                    []string
 	scts                             bool
 	supportedVersions                []uint16
@@ -222,6 +223,11 @@ func (m *clientHelloMsg) marshal() []byte {
 						b.AddBytes(m.secureRenegotiation)
 					})
 				})
+			}
+			if m.extendedMasterSecret {
+				// RFC 7627
+				b.AddUint16(extensionExtendedMasterSecret)
+				b.AddUint16(0) // empty extension_data
 			}
 			if len(m.alpnProtocols) > 0 {
 				// RFC 7301, Section 3.1
@@ -527,6 +533,9 @@ func (m *clientHelloMsg) unmarshal(data []byte) bool {
 				return false
 			}
 			m.secureRenegotiationSupported = true
+		case extensionExtendedMasterSecret:
+			// RFC 7627
+			m.extendedMasterSecret = true
 		case extensionALPN:
 			// RFC 7301, Section 3.1
 			var protoList cryptobyte.String
@@ -639,6 +648,7 @@ type serverHelloMsg struct {
 	ticketSupported              bool
 	secureRenegotiationSupported bool
 	secureRenegotiation          []byte
+	extendedMasterSecret         bool
 	alpnProtocol                 string
 	scts                         [][]byte
 	supportedVersion             uint16
@@ -692,6 +702,10 @@ func (m *serverHelloMsg) marshal() []byte {
 						b.AddBytes(m.secureRenegotiation)
 					})
 				})
+			}
+			if m.extendedMasterSecret {
+				b.AddUint16(extensionExtendedMasterSecret)
+				b.AddUint16(0) // empty extension_data
 			}
 			if len(m.alpnProtocol) > 0 {
 				b.AddUint16(extensionALPN)
@@ -824,6 +838,8 @@ func (m *serverHelloMsg) unmarshal(data []byte) bool {
 				return false
 			}
 			m.secureRenegotiationSupported = true
+		case extensionExtendedMasterSecret:
+			m.extendedMasterSecret = true
 		case extensionALPN:
 			var protoList cryptobyte.String
 			if !extData.ReadUint16LengthPrefixed(&protoList) || protoList.Empty() {

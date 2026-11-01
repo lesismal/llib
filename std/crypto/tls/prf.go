@@ -80,6 +80,7 @@ const (
 )
 
 var masterSecretLabel = []byte("master secret")
+var extendedMasterSecretLabel = []byte("extended master secret")
 var keyExpansionLabel = []byte("key expansion")
 var clientFinishedLabel = []byte("client finished")
 var serverFinishedLabel = []byte("server finished")
@@ -112,6 +113,15 @@ func masterFromPreMasterSecret(version uint16, suite *cipherSuite, preMasterSecr
 
 	masterSecret := make([]byte, masterSecretLength)
 	prfForVersion(version, suite)(masterSecret, preMasterSecret, masterSecretLabel, seed)
+	return masterSecret
+}
+
+// extMasterFromPreMasterSecret generates the extended master secret from the
+// pre-master secret and the session hash (the handshake transcript hash up to
+// and including the ClientKeyExchange message). See RFC 7627, Section 4.
+func extMasterFromPreMasterSecret(version uint16, suite *cipherSuite, preMasterSecret, transcript []byte) []byte {
+	masterSecret := make([]byte, masterSecretLength)
+	prfForVersion(version, suite)(masterSecret, preMasterSecret, extendedMasterSecretLabel, transcript)
 	return masterSecret
 }
 

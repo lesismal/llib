@@ -129,9 +129,15 @@ func (hs *serverHandshakeState) handshake() error {
 	}
 
 	// For an overview of TLS handshaking, see RFC 5246, Section 7.3.
-	if hs.checkForResumption() {
+	resume, err := hs.checkForResumption()
+	if err != nil {
+		hs.err = err
+		return err
+	}
+	if resume {
 		// The client has included a session ticket and so we do an abbreviated handshake.
 		c.didResume = true
+		c.extMasterSecret = hs.sessionState.extMasterSecret
 		if err := hs.doResumeHandshake(); err != nil {
 			hs.err = err
 			return err
@@ -294,6 +300,7 @@ func (hs *serverHandshakeState) processClientHello() error {
 	}
 
 	hs.hello.secureRenegotiationSupported = hs.clientHello.secureRenegotiationSupported
+	hs.hello.extendedMasterSecret = hs.clientHello.extendedMasterSecret
 	hs.hello.compressionMethod = compressionNone
 	if len(hs.clientHello.serverName) > 0 {
 		c.serverName = hs.clientHello.serverName
@@ -483,76 +490,91 @@ func (hs *serverHandshakeState) cipherSuiteOk(c *cipherSuite) bool {
 }
 
 // checkForResumption reports whether we should perform resumption on this connection.
-func (hs *serverHandshakeState) checkForResumption() bool {
+func (hs *serverHandshakeState) checkForResumption() (bool, error) {
 	c := hs.c
 
 	if c.handshakeStatusAsync >= stateServerHandshakeCheckForResumption {
-		return hs.ok
+		return hs.ok, nil
 	}
 	c.handshakeStatusAsync = stateServerHandshakeCheckForResumption
 
 	if c.config.SessionTicketsDisabled {
 		hs.ok = false
-		return false
+		return false, nil
 	}
 
 	plaintext, usedOldKey := c.decryptTicket(hs.clientHello.sessionTicket)
 	if plaintext == nil {
 		hs.ok = false
-		return false
+		return false, nil
 	}
-	hs.sessionState = &sessionState{usedOldKey: usedOldKey}
-	ok := hs.sessionState.unmarshal(plaintext)
+	sessionState := &sessionState{usedOldKey: usedOldKey}
+	ok := sessionState.unmarshal(plaintext)
 	if !ok {
 		hs.ok = false
-		return false
+		return false, nil
 	}
 
-	createdAt := time.Unix(int64(hs.sessionState.createdAt), 0)
+	createdAt := time.Unix(int64(sessionState.createdAt), 0)
 	if c.config.time().Sub(createdAt) > maxSessionTicketLifetime {
 		hs.ok = false
-		return false
+		return false, nil
 	}
 
 	// Never resume a session for a different TLS version.
-	if c.vers != hs.sessionState.vers {
+	if c.vers != sessionState.vers {
 		hs.ok = false
-		return false
+		return false, nil
 	}
 
 	cipherSuiteOk := false
 	// Check that the client is still offering the ciphersuite in the session.
 	for _, id := range hs.clientHello.cipherSuites {
-		if id == hs.sessionState.cipherSuite {
+		if id == sessionState.cipherSuite {
 			cipherSuiteOk = true
 			break
 		}
 	}
 	if !cipherSuiteOk {
 		hs.ok = false
-		return false
+		return false, nil
 	}
 
 	// Check that we also support the ciphersuite from the session.
-	hs.suite = selectCipherSuite([]uint16{hs.sessionState.cipherSuite},
+	hs.suite = selectCipherSuite([]uint16{sessionState.cipherSuite},
 		c.config.cipherSuites(), hs.cipherSuiteOk)
 	if hs.suite == nil {
 		hs.ok = false
-		return false
+		return false, nil
 	}
 
-	sessionHasClientCerts := len(hs.sessionState.certificates) != 0
+	sessionHasClientCerts := len(sessionState.certificates) != 0
 	needClientCerts := requiresClientCert(c.config.ClientAuth)
 	if needClientCerts && !sessionHasClientCerts {
 		hs.ok = false
-		return false
+		return false, nil
 	}
 	if sessionHasClientCerts && c.config.ClientAuth == NoClientCert {
 		hs.ok = false
-		return false
+		return false, nil
 	}
+
+	// RFC 7627, Section 5.3
+	if !sessionState.extMasterSecret && hs.clientHello.extendedMasterSecret {
+		hs.ok = false
+		return false, nil
+	}
+	if sessionState.extMasterSecret && !hs.clientHello.extendedMasterSecret {
+		// Aborting is somewhat harsh, but it's a MUST and it would indicate a
+		// weird downgrade in client capabilities.
+		return false, errors.New("tls: session supported extended_master_secret but client does not")
+	}
+
+	// Only keep the session state once it is accepted, so that a declined
+	// ticket doesn't leak its creation time into the new ticket.
+	hs.sessionState = sessionState
 	hs.ok = true
-	return true
+	return true, nil
 }
 
 func (hs *serverHandshakeState) doResumeHandshake() error {
@@ -767,7 +789,16 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 			c.sendAlert(alertHandshakeFailure)
 			return err
 		}
-		hs.masterSecret = masterFromPreMasterSecret(c.vers, hs.suite, preMasterSecret, hs.clientHello.random, hs.hello.random)
+		// The session hash for Extended Master Secret covers the transcript
+		// up to and including the ClientKeyExchange just written above. This
+		// whole block runs at most once, since the state is advanced on
+		// entry, so the transcript is neither hashed twice nor read late.
+		if hs.hello.extendedMasterSecret {
+			c.extMasterSecret = true
+			hs.masterSecret = extMasterFromPreMasterSecret(c.vers, hs.suite, preMasterSecret, hs.finishedHash.Sum())
+		} else {
+			hs.masterSecret = masterFromPreMasterSecret(c.vers, hs.suite, preMasterSecret, hs.clientHello.random, hs.hello.random)
+		}
 		if err := c.config.writeKeyLog(keyLogLabelTLS12, hs.clientHello.random, hs.masterSecret); err != nil {
 			c.sendAlert(alertInternalError)
 			return err
@@ -797,6 +828,11 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 			c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2ReadHandshake3
 			return unexpectedMessageError(certVerify, msg)
 		}
+		// pub is a local of this call, so it is lost when the handshake is
+		// re-entered after errDataNotEnough; recover it from the peer chain.
+		if pub == nil {
+			pub = c.peerCertificates[0].PublicKey
+		}
 		var sigType uint8
 		var sigHash crypto.Hash
 		if c.vers >= VersionTLS12 {
@@ -821,11 +857,6 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 		}
 
 		signed := hs.finishedHash.hashForClientCertificate(sigType, sigHash, hs.masterSecret)
-		if pub == nil {
-			if len(c.peerCertificates) > 0 {
-				pub = c.peerCertificates[0].PublicKey
-			}
-		}
 		if err := verifyHandshakeSignature(sigType, pub, sigHash, signed, certVerify.signature); err != nil {
 			c.sendAlert(alertDecryptError)
 			c.handshakeStatusAsync = stateServerHandshakeDoFullHandshake2ReadHandshake3
@@ -948,11 +979,12 @@ func (hs *serverHandshakeState) sendSessionTicket() error {
 		certsFromClient = append(certsFromClient, cert.Raw)
 	}
 	state := sessionState{
-		vers:         c.vers,
-		cipherSuite:  hs.suite.id,
-		createdAt:    createdAt,
-		masterSecret: hs.masterSecret,
-		certificates: certsFromClient,
+		vers:            c.vers,
+		cipherSuite:     hs.suite.id,
+		createdAt:       createdAt,
+		masterSecret:    hs.masterSecret,
+		certificates:    certsFromClient,
+		extMasterSecret: c.extMasterSecret,
 	}
 	var err error
 	m.ticket, err = c.encryptTicketForState(state.marshal)
@@ -997,11 +1029,12 @@ func (hs *serverHandshakeState) sendSessionTicket2() error {
 		certsFromClient = append(certsFromClient, cert.Raw)
 	}
 	state := sessionState{
-		vers:         c.vers,
-		cipherSuite:  hs.suite.id,
-		createdAt:    createdAt,
-		masterSecret: hs.masterSecret,
-		certificates: certsFromClient,
+		vers:            c.vers,
+		cipherSuite:     hs.suite.id,
+		createdAt:       createdAt,
+		masterSecret:    hs.masterSecret,
+		certificates:    certsFromClient,
+		extMasterSecret: c.extMasterSecret,
 	}
 	var err error
 	m.ticket, err = c.encryptTicketForState(state.marshal)
