@@ -378,9 +378,11 @@ func TestVersion(t *testing.T) {
 	serverConfig := &Config{
 		Certificates: testConfig.Certificates,
 		MaxVersion:   VersionTLS11,
+		MinVersion:   VersionTLS10,
 	}
 	clientConfig := &Config{
 		InsecureSkipVerify: true,
+		MinVersion:         VersionTLS10,
 	}
 	state, _, err := testHandshake(t, clientConfig, serverConfig)
 	if err != nil {
@@ -396,10 +398,12 @@ func TestCipherSuitePreference(t *testing.T) {
 		CipherSuites: []uint16{TLS_RSA_WITH_RC4_128_SHA, TLS_RSA_WITH_AES_128_CBC_SHA, TLS_ECDHE_RSA_WITH_RC4_128_SHA},
 		Certificates: testConfig.Certificates,
 		MaxVersion:   VersionTLS11,
+		MinVersion:   VersionTLS10,
 	}
 	clientConfig := &Config{
 		CipherSuites:       []uint16{TLS_RSA_WITH_AES_128_CBC_SHA, TLS_RSA_WITH_RC4_128_SHA},
 		InsecureSkipVerify: true,
+		MinVersion:         VersionTLS10,
 	}
 	state, _, err := testHandshake(t, clientConfig, serverConfig)
 	if err != nil {
@@ -462,12 +466,14 @@ func testCrossVersionResume(t *testing.T, version uint16) {
 	serverConfig := &Config{
 		CipherSuites: []uint16{TLS_RSA_WITH_AES_128_CBC_SHA},
 		Certificates: testConfig.Certificates,
+		MinVersion:   VersionTLS10,
 	}
 	clientConfig := &Config{
 		CipherSuites:       []uint16{TLS_RSA_WITH_AES_128_CBC_SHA},
 		InsecureSkipVerify: true,
 		ClientSessionCache: NewLRUClientSessionCache(1),
 		ServerName:         "servername",
+		MinVersion:         VersionTLS10,
 	}
 
 	// Establish a session at TLS 1.1.
@@ -1146,6 +1152,9 @@ func TestServerResumptionDisabled(t *testing.T) {
 func TestFallbackSCSV(t *testing.T) {
 	serverConfig := Config{
 		Certificates: testConfig.Certificates,
+		// Allow TLS 1.1 so that the fallback SCSV, rather than the
+		// minimum version, is what rejects the connection.
+		MinVersion: VersionTLS10,
 	}
 	test := &serverTest{
 		name:   "FallbackSCSV",
@@ -1159,9 +1168,8 @@ func TestFallbackSCSV(t *testing.T) {
 
 func TestHandshakeServerExportKeyingMaterial(t *testing.T) {
 	test := &serverTest{
-		name:    "ExportKeyingMaterial",
-		command: []string{"openssl", "s_client", "-cipher", "ECDHE-RSA-CHACHA20-POLY1305", "-ciphersuites", "TLS_CHACHA20_POLY1305_SHA256"},
-		config:  testConfig.Clone(),
+		name:   "ExportKeyingMaterial",
+		config: testConfig.Clone(),
 		validate: func(state ConnectionState) error {
 			if km, err := state.ExportKeyingMaterial("test", nil, 42); err != nil {
 				return fmt.Errorf("ExportKeyingMaterial failed: %v", err)
@@ -1679,7 +1687,11 @@ func TestMultipleCertificates(t *testing.T) {
 
 func TestAESCipherReordering(t *testing.T) {
 	currentAESSupport := hasAESGCMHardwareSupport
-	defer func() { hasAESGCMHardwareSupport = currentAESSupport; initDefaultCipherSuites() }()
+	defer func() {
+		hasAESGCMHardwareSupport = currentAESSupport
+		initDefaultCipherSuites()
+		setTestDefaultCipherSuitesTLS13()
+	}()
 
 	tests := []struct {
 		name                     string
@@ -1829,7 +1841,11 @@ func TestAESCipherReordering(t *testing.T) {
 
 func TestAESCipherReordering13(t *testing.T) {
 	currentAESSupport := hasAESGCMHardwareSupport
-	defer func() { hasAESGCMHardwareSupport = currentAESSupport; initDefaultCipherSuites() }()
+	defer func() {
+		hasAESGCMHardwareSupport = currentAESSupport
+		initDefaultCipherSuites()
+		setTestDefaultCipherSuitesTLS13()
+	}()
 
 	tests := []struct {
 		name                     string

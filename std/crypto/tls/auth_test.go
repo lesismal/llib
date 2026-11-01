@@ -37,20 +37,17 @@ func TestSignatureSelection(t *testing.T) {
 		expectedSigType uint8
 		expectedHash    crypto.Hash
 	}{
-		{rsaCert, []SignatureScheme{PKCS1WithSHA1, PKCS1WithSHA256}, VersionTLS12, PKCS1WithSHA1, signaturePKCS1v15, crypto.SHA1},
+		// SHA-1 is never selected in TLS 1.2 (RFC 9155), even if preferred.
+		{rsaCert, []SignatureScheme{PKCS1WithSHA1, PKCS1WithSHA256}, VersionTLS12, PKCS1WithSHA256, signaturePKCS1v15, crypto.SHA256},
 		{rsaCert, []SignatureScheme{PKCS1WithSHA512, PKCS1WithSHA1}, VersionTLS12, PKCS1WithSHA512, signaturePKCS1v15, crypto.SHA512},
 		{rsaCert, []SignatureScheme{PSSWithSHA256, PKCS1WithSHA256}, VersionTLS12, PSSWithSHA256, signatureRSAPSS, crypto.SHA256},
 		{pkcs1Cert, []SignatureScheme{PSSWithSHA256, PKCS1WithSHA256}, VersionTLS12, PKCS1WithSHA256, signaturePKCS1v15, crypto.SHA256},
 		{rsaCert, []SignatureScheme{PSSWithSHA384, PKCS1WithSHA1}, VersionTLS13, PSSWithSHA384, signatureRSAPSS, crypto.SHA384},
-		{ecdsaCert, []SignatureScheme{ECDSAWithSHA1}, VersionTLS12, ECDSAWithSHA1, signatureECDSA, crypto.SHA1},
+		{ecdsaCert, []SignatureScheme{ECDSAWithSHA1, ECDSAWithP256AndSHA256}, VersionTLS12, ECDSAWithP256AndSHA256, signatureECDSA, crypto.SHA256},
 		{ecdsaCert, []SignatureScheme{ECDSAWithP256AndSHA256}, VersionTLS12, ECDSAWithP256AndSHA256, signatureECDSA, crypto.SHA256},
 		{ecdsaCert, []SignatureScheme{ECDSAWithP256AndSHA256}, VersionTLS13, ECDSAWithP256AndSHA256, signatureECDSA, crypto.SHA256},
 		{ed25519Cert, []SignatureScheme{Ed25519}, VersionTLS12, Ed25519, signatureEd25519, directSigning},
 		{ed25519Cert, []SignatureScheme{Ed25519}, VersionTLS13, Ed25519, signatureEd25519, directSigning},
-
-		// TLS 1.2 without signature_algorithms extension
-		{rsaCert, nil, VersionTLS12, PKCS1WithSHA1, signaturePKCS1v15, crypto.SHA1},
-		{ecdsaCert, nil, VersionTLS12, ECDSAWithSHA1, signatureECDSA, crypto.SHA1},
 
 		// TLS 1.2 does not restrict the ECDSA curve (our ecdsaCert is P-256)
 		{ecdsaCert, []SignatureScheme{ECDSAWithP384AndSHA384}, VersionTLS12, ECDSAWithP384AndSHA384, signatureECDSA, crypto.SHA384},
@@ -95,9 +92,14 @@ func TestSignatureSelection(t *testing.T) {
 		{brokenCert, []SignatureScheme{Ed25519}, VersionTLS12},
 		{brokenCert, []SignatureScheme{PKCS1WithSHA256}, VersionTLS12},
 		// RFC 5246, Section 7.4.1.4.1, says to only consider {sha1,ecdsa} as
-		// default when the extension is missing, and RFC 8422 does not update
-		// it. Anyway, if a stack supports Ed25519 it better support sigalgs.
+		// default when the extension is missing, but RFC 9155 removed SHA-1
+		// signatures from TLS 1.2, so a TLS 1.2 peer must send sigalgs.
+		{rsaCert, nil, VersionTLS12},
+		{ecdsaCert, nil, VersionTLS12},
 		{ed25519Cert, nil, VersionTLS12},
+		// SHA-1 alone is not acceptable in TLS 1.2 either.
+		{rsaCert, []SignatureScheme{PKCS1WithSHA1}, VersionTLS12},
+		{ecdsaCert, []SignatureScheme{ECDSAWithSHA1}, VersionTLS12},
 		// TLS 1.3 has no default signature_algorithms.
 		{rsaCert, nil, VersionTLS13},
 		{ecdsaCert, nil, VersionTLS13},

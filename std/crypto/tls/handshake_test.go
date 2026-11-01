@@ -334,16 +334,21 @@ func TestMain(m *testing.M) {
 	os.Exit(runMain(m))
 }
 
-func runMain(m *testing.M) int {
-	// TLS 1.3 cipher suites preferences are not configurable and change based
-	// on the architecture. Force them to the version with AES acceleration for
-	// test consistency.
-	once.Do(initDefaultCipherSuites)
+// setTestDefaultCipherSuitesTLS13 forces the TLS 1.3 cipher suite
+// preferences, which are not configurable and change based on the
+// architecture, to the version with AES acceleration for test consistency.
+// Tests that call initDefaultCipherSuites must call it again afterwards.
+func setTestDefaultCipherSuitesTLS13() {
 	varDefaultCipherSuitesTLS13 = []uint16{
 		TLS_AES_128_GCM_SHA256,
 		TLS_CHACHA20_POLY1305_SHA256,
 		TLS_AES_256_GCM_SHA384,
 	}
+}
+
+func runMain(m *testing.M) int {
+	once.Do(initDefaultCipherSuites)
+	setTestDefaultCipherSuitesTLS13()
 
 	// Set up localPipe.
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -370,6 +375,9 @@ func runMain(m *testing.M) int {
 		Certificates:       make([]Certificate, 2),
 		InsecureSkipVerify: true,
 		CipherSuites:       allCipherSuites(),
+		// The tests and recordings cover TLS 1.0 and 1.1, which are
+		// disabled by default since TLS 1.2 became the minimum.
+		MinVersion: VersionTLS10,
 	}
 	testConfig.Certificates[0].Certificate = [][]byte{testRSACertificate}
 	testConfig.Certificates[0].PrivateKey = testRSAPrivateKey
@@ -391,7 +399,9 @@ func runMain(m *testing.M) int {
 func testHandshake(t *testing.T, clientConfig, serverConfig *Config) (serverState, clientState ConnectionState, err error) {
 	const sentinel = "SENTINEL\n"
 	c, s := localPipe(t)
-	errChan := make(chan error)
+	// Buffered so that a client failing before it sends anything can close
+	// its end instead of blocking until the server gives up.
+	errChan := make(chan error, 1)
 	go func() {
 		cli := Client(c, clientConfig)
 		err := cli.Handshake()
