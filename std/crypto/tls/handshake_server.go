@@ -24,14 +24,16 @@ const (
 
 	// TLS 1.3
 	stateServerHandshake13ProcessClientHello    uint32 = 101
-	stateServerHandshake13CheckForResumption    uint32 = 102
-	stateServerHandshake13PickCertificate       uint32 = 103
-	stateServerHandshake13SendServerParameters  uint32 = 104
-	stateServerHandshake13SendServerCertificate uint32 = 105
-	stateServerHandshake13SendServerFinished    uint32 = 106
-	stateServerHandshake13ReadClientCertificate uint32 = 107
-	stateServerHandshake13ReadClientFinished    uint32 = 108
-	stateServerHandshake13HandshakeDone         uint32 = 109
+	stateServerHandshake13ReadSecondClientHello uint32 = 102
+	stateServerHandshake13ProcessKeyShare       uint32 = 103
+	stateServerHandshake13CheckForResumption    uint32 = 104
+	stateServerHandshake13PickCertificate       uint32 = 105
+	stateServerHandshake13SendServerParameters  uint32 = 106
+	stateServerHandshake13SendServerCertificate uint32 = 107
+	stateServerHandshake13SendServerFinished    uint32 = 108
+	stateServerHandshake13ReadClientCertificate uint32 = 109
+	stateServerHandshake13ReadClientFinished    uint32 = 110
+	stateServerHandshake13HandshakeDone         uint32 = 111
 
 	// below TLS 1.3
 	stateServerHandshakeProcessClientHello uint32 = 201

@@ -39,6 +39,14 @@ type serverHandshakeStateTLS13 struct {
 	transcript      hash.Hash
 	clientFinished  []byte
 
+	// selectedGroup and clientKeyShare carry the key exchange choice from
+	// processClientHello to processKeyShare. clientKeyShare is nil until the
+	// client sent a share for selectedGroup, which after a HelloRetryRequest
+	// only happens in the second ClientHello.
+	selectedGroup  CurveID
+	clientKeyShare *keyShare
+	sentHRR        bool
+
 	err error
 }
 
@@ -54,6 +62,17 @@ func (hs *serverHandshakeStateTLS13) handshake() error {
 
 	// For an overview of the TLS 1.3 handshake, see RFC 8446, Section 2.
 	if err := hs.processClientHello(); err != nil {
+		hs.err = err
+		return err
+	}
+	// After a HelloRetryRequest, the second ClientHello may not have arrived
+	// yet in non-blocking mode, so reading it is a step of its own that can
+	// be re-entered.
+	if err := hs.readSecondClientHello(); err != nil {
+		hs.err = err
+		return err
+	}
+	if err := hs.processKeyShare(); err != nil {
 		hs.err = err
 		return err
 	}
@@ -235,13 +254,23 @@ GroupSelection:
 		c.sendAlert(alertHandshakeFailure)
 		return errors.New("tls: no ECDHE curve supported by both client and server")
 	}
+	hs.selectedGroup = selectedGroup
+	hs.clientKeyShare = clientKeyShare
 	if clientKeyShare == nil {
-		if err := hs.doHelloRetryRequest(selectedGroup); err != nil {
-			return err
-		}
-		clientKeyShare = &hs.clientHello.keyShares[0]
+		return hs.sendHelloRetryRequest(selectedGroup)
 	}
+	return nil
+}
 
+func (hs *serverHandshakeStateTLS13) processKeyShare() error {
+	c := hs.c
+
+	if c.handshakeStatusAsync >= stateServerHandshake13ProcessKeyShare {
+		return nil
+	}
+	c.handshakeStatusAsync = stateServerHandshake13ProcessKeyShare
+
+	selectedGroup, clientKeyShare := hs.selectedGroup, hs.clientKeyShare
 	if selectedGroup == X25519MLKEM768 {
 		sharedKey, serverShare, err := x25519MLKEM768ServerSharedSecret(c.config.rand(), clientKeyShare.data)
 		if err != nil {
@@ -455,7 +484,7 @@ func (hs *serverHandshakeStateTLS13) sendDummyChangeCipherSpec() error {
 	return err
 }
 
-func (hs *serverHandshakeStateTLS13) doHelloRetryRequest(selectedGroup CurveID) error {
+func (hs *serverHandshakeStateTLS13) sendHelloRetryRequest(selectedGroup CurveID) error {
 	c := hs.c
 
 	// Make sure the client didn't send extra handshake messages alongside
@@ -493,10 +522,33 @@ func (hs *serverHandshakeStateTLS13) doHelloRetryRequest(selectedGroup CurveID) 
 		return err
 	}
 
+	hs.sentHRR = true
+	return nil
+}
+
+// readSecondClientHello reads the ClientHello sent in response to a
+// HelloRetryRequest. The state only advances once a message was read, so in
+// non-blocking mode it is retried until the ClientHello is complete.
+func (hs *serverHandshakeStateTLS13) readSecondClientHello() error {
+	c := hs.c
+
+	if c.handshakeStatusAsync >= stateServerHandshake13ReadSecondClientHello {
+		return nil
+	}
+	if !hs.sentHRR {
+		c.handshakeStatusAsync = stateServerHandshake13ReadSecondClientHello
+		return nil
+	}
+
 	msg, err := c.readHandshake()
 	if err != nil {
+		if err != errDataNotEnough {
+			c.handshakeStatusAsync = stateServerHandshake13ReadSecondClientHello
+		}
 		return err
 	}
+	c.handshakeStatusAsync = stateServerHandshake13ReadSecondClientHello
+	selectedGroup := hs.selectedGroup
 
 	clientHello, ok := msg.(*clientHelloMsg)
 	if !ok {
@@ -520,6 +572,7 @@ func (hs *serverHandshakeStateTLS13) doHelloRetryRequest(selectedGroup CurveID) 
 	}
 
 	hs.clientHello = clientHello
+	hs.clientKeyShare = &hs.clientHello.keyShares[0]
 	return nil
 }
 
