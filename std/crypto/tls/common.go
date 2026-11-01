@@ -657,7 +657,9 @@ type Config struct {
 	ClientSessionCache ClientSessionCache
 
 	// MinVersion contains the minimum TLS version that is acceptable.
-	// If zero, TLS 1.0 is currently taken as the minimum.
+	//
+	// By default, TLS 1.2 is currently used as the minimum. TLS 1.0 and
+	// TLS 1.1 can be re-enabled by setting MinVersion explicitly.
 	MinVersion uint16
 
 	// MaxVersion contains the maximum TLS version that is acceptable.
@@ -943,6 +945,9 @@ var supportedVersions = []uint16{
 func (c *Config) supportedVersions() []uint16 {
 	versions := make([]uint16, 0, len(supportedVersions))
 	for _, v := range supportedVersions {
+		if (c == nil || c.MinVersion == 0) && v < VersionTLS12 {
+			continue
+		}
 		if c != nil && c.MinVersion != 0 && v < c.MinVersion {
 			continue
 		}
@@ -1499,6 +1504,44 @@ NextCipherSuite:
 		}
 		varDefaultCipherSuites = append(varDefaultCipherSuites, suite.id)
 	}
+}
+
+// anyValidVerifiedChain reports whether any of the previously verified chains
+// is still valid at opts.CurrentTime and still rooted in a CA of opts.Roots.
+// It is used on session resumption, where the chain is not verified again.
+func anyValidVerifiedChain(verifiedChains [][]*x509.Certificate, opts x509.VerifyOptions) bool {
+NextChain:
+	for _, chain := range verifiedChains {
+		if len(chain) == 0 {
+			continue
+		}
+		for _, cert := range chain {
+			if opts.CurrentTime.Before(cert.NotBefore) || opts.CurrentTime.After(cert.NotAfter) {
+				continue NextChain
+			}
+		}
+		// The chain was already validated, we only care that it is rooted in a
+		// CA in opts.Roots. On platforms where we control chain validation this
+		// is a simple lookup, which we simulate by running Verify on the root.
+		// On Windows and macOS we have to do full verification again, because
+		// EKU handling might differ.
+		if runtime.GOOS == "windows" || runtime.GOOS == "darwin" || runtime.GOOS == "ios" {
+			opts.Intermediates = x509.NewCertPool()
+			if len(chain) > 2 {
+				for _, cert := range chain[1 : len(chain)-1] {
+					opts.Intermediates.AddCert(cert)
+				}
+			}
+			if _, err := chain[0].Verify(opts); err == nil {
+				return true
+			}
+		} else {
+			if _, err := chain[len(chain)-1].Verify(opts); err == nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func unexpectedMessageError(wanted, got interface{}) error {

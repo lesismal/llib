@@ -37,6 +37,26 @@ var tests = []interface{}{
 	&certificateMsgTLS13{},
 }
 
+// testMessage is implemented by handshake messages and session states.
+type testMessage interface {
+	unmarshal([]byte) bool
+}
+
+func marshalTestMessage(t *testing.T, m testMessage) []byte {
+	switch m := m.(type) {
+	case handshakeMessage:
+		return m.marshal()
+	case interface{ marshal() ([]byte, error) }:
+		b, err := m.marshal()
+		if err != nil {
+			t.Fatalf("failed to marshal %#v: %v", m, err)
+		}
+		return b
+	}
+	t.Fatalf("unknown test message type %T", m)
+	return nil
+}
+
 func TestMarshalUnmarshal(t *testing.T) {
 	rand := rand.New(rand.NewSource(time.Now().UnixNano()))
 
@@ -54,14 +74,14 @@ func TestMarshalUnmarshal(t *testing.T) {
 				break
 			}
 
-			m1 := v.Interface().(handshakeMessage)
-			marshaled := m1.marshal()
-			m2 := iface.(handshakeMessage)
+			m1 := v.Interface().(testMessage)
+			marshaled := marshalTestMessage(t, m1)
+			m2 := iface.(testMessage)
 			if !m2.unmarshal(marshaled) {
 				t.Errorf("#%d failed to unmarshal %#v %x", i, m1, marshaled)
 				break
 			}
-			m2.marshal() // to fill any marshal cache in the message
+			marshalTestMessage(t, m2) // to fill any marshal cache in the message
 
 			if !reflect.DeepEqual(m1, m2) {
 				t.Errorf("#%d got:%#v want:%#v %x", i, m2, m1, marshaled)
@@ -88,7 +108,7 @@ func TestMarshalUnmarshal(t *testing.T) {
 func TestFuzz(t *testing.T) {
 	rand := rand.New(rand.NewSource(0))
 	for _, iface := range tests {
-		m := iface.(handshakeMessage)
+		m := iface.(testMessage)
 
 		for j := 0; j < 1000; j++ {
 			len := rand.Intn(100)

@@ -5,7 +5,9 @@
 package tls
 
 import (
+	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 
 	"golang.org/x/crypto/cryptobyte"
@@ -96,6 +98,23 @@ type clientHelloMsg struct {
 
 func (m *clientHelloMsg) Marshal() []byte {
 	return m.marshal()
+}
+
+// marshalChecked is like marshal, but returns an error instead of panicking
+// when a field does not fit in its length prefix. A ClientHello can carry
+// peer-controlled data, such as a session ticket or a HelloRetryRequest
+// cookie, so oversized values must not crash the process. See CVE-2022-41724.
+func (m *clientHelloMsg) marshalChecked() (data []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			e, ok := r.(error)
+			if _, isRuntimeErr := r.(runtime.Error); !ok || isRuntimeErr {
+				panic(r)
+			}
+			data, err = nil, errors.New("tls: failed to marshal ClientHello: "+e.Error())
+		}
+	}()
+	return m.marshal(), nil
 }
 
 func (m *clientHelloMsg) marshal() []byte {
@@ -397,6 +416,7 @@ func (m *clientHelloMsg) unmarshal(data []byte) bool {
 		return false
 	}
 
+	seenExts := make(map[uint16]bool)
 	for !extensions.Empty() {
 		var extension uint16
 		var extData cryptobyte.String
@@ -404,6 +424,13 @@ func (m *clientHelloMsg) unmarshal(data []byte) bool {
 			!extensions.ReadUint16LengthPrefixed(&extData) {
 			return false
 		}
+
+		// RFC 8446, Section 4.2: there MUST NOT be more than one extension
+		// of the same type in a given extension block.
+		if seenExts[extension] {
+			return false
+		}
+		seenExts[extension] = true
 
 		switch extension {
 		case extensionServerName:
@@ -771,6 +798,7 @@ func (m *serverHelloMsg) unmarshal(data []byte) bool {
 		return false
 	}
 
+	seenExts := make(map[uint16]bool)
 	for !extensions.Empty() {
 		var extension uint16
 		var extData cryptobyte.String
@@ -778,6 +806,13 @@ func (m *serverHelloMsg) unmarshal(data []byte) bool {
 			!extensions.ReadUint16LengthPrefixed(&extData) {
 			return false
 		}
+
+		// RFC 8446, Section 4.2: there MUST NOT be more than one extension
+		// of the same type in a given extension block.
+		if seenExts[extension] {
+			return false
+		}
+		seenExts[extension] = true
 
 		switch extension {
 		case extensionStatusRequest:
@@ -900,6 +935,7 @@ func (m *encryptedExtensionsMsg) unmarshal(data []byte) bool {
 		return false
 	}
 
+	seenExts := make(map[uint16]bool)
 	for !extensions.Empty() {
 		var extension uint16
 		var extData cryptobyte.String
@@ -907,6 +943,13 @@ func (m *encryptedExtensionsMsg) unmarshal(data []byte) bool {
 			!extensions.ReadUint16LengthPrefixed(&extData) {
 			return false
 		}
+
+		// RFC 8446, Section 4.2: there MUST NOT be more than one extension
+		// of the same type in a given extension block.
+		if seenExts[extension] {
+			return false
+		}
+		seenExts[extension] = true
 
 		switch extension {
 		case extensionALPN:

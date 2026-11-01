@@ -234,6 +234,13 @@ func (hs *clientHandshakeStateTLS13) processHelloRetryRequest() error {
 	}
 
 	hs.hello.raw = nil
+	// The cookie is chosen by the server, make sure the second ClientHello can
+	// still be encoded instead of panicking. See CVE-2022-41724.
+	if _, err := hs.hello.marshalChecked(); err != nil {
+		c.sendAlert(alertIllegalParameter)
+		return err
+	}
+	hs.hello.raw = nil
 	if len(hs.hello.pskIdentities) > 0 {
 		pskSuite := cipherSuiteTLS13ByID(hs.session.cipherSuite)
 		if pskSuite == nil {
@@ -361,7 +368,9 @@ func (hs *clientHandshakeStateTLS13) establishHandshakeKeys() error {
 	c.out.setTrafficSecret(hs.suite, clientSecret)
 	serverSecret := hs.suite.deriveSecret(handshakeSecret,
 		serverHandshakeTrafficLabel, hs.transcript)
-	c.in.setTrafficSecret(hs.suite, serverSecret)
+	if err := c.setReadTrafficSecret(hs.suite, serverSecret); err != nil {
+		return err
+	}
 
 	err := c.config.writeKeyLog(keyLogLabelClientHandshake, hs.hello.random, clientSecret)
 	if err != nil {
@@ -527,7 +536,9 @@ func (hs *clientHandshakeStateTLS13) readServerFinished() error {
 		clientApplicationTrafficLabel, hs.transcript)
 	serverSecret := hs.suite.deriveSecret(hs.masterSecret,
 		serverApplicationTrafficLabel, hs.transcript)
-	c.in.setTrafficSecret(hs.suite, serverSecret)
+	if err := c.setReadTrafficSecret(hs.suite, serverSecret); err != nil {
+		return err
+	}
 
 	err = c.config.writeKeyLog(keyLogLabelClientTraffic, hs.hello.random, hs.trafficSecret)
 	if err != nil {

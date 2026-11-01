@@ -751,6 +751,15 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 		}
 		c.input.Reset(nil)
 
+		// readFromUntil reads at absolute offsets from the start of rawInput,
+		// so a fully consumed rawInput must be reset first. It may not have
+		// been freed yet when called recursively via retryReadRecord, for
+		// example after an ignored TLS 1.3 change_cipher_spec record.
+		if c.rawInput != nil && len(*c.rawInput) == c.rawInputOff {
+			*c.rawInput = (*c.rawInput)[:0]
+			c.rawInputOff = 0
+		}
+
 		// Read header, payload.
 		if err := c.readFromUntil(c.conn, recordHeaderLen, 0); err != nil {
 			// RFC 8446, Section 6.1 suggests that EOF without an alertCloseNotify
@@ -1450,7 +1459,9 @@ func (c *Conn) handleKeyUpdate(keyUpdate *keyUpdateMsg) error {
 	}
 
 	newSecret := cipherSuite.nextTrafficSecret(c.in.trafficSecret)
-	c.in.setTrafficSecret(cipherSuite, newSecret)
+	if err := c.setReadTrafficSecret(cipherSuite, newSecret); err != nil {
+		return c.in.setErrorLocked(err)
+	}
 
 	if keyUpdate.updateRequested {
 		// c.out.Lock()
@@ -1826,6 +1837,28 @@ func (c *Conn) VerifyHostname(host string) error {
 
 func (c *Conn) handshakeComplete() bool {
 	return atomic.LoadUint32(&c.handshakeStatus) == 1
+}
+
+// handLen returns the number of buffered handshake bytes not yet consumed.
+func (c *Conn) handLen() int {
+	if c.hand == nil {
+		return 0
+	}
+	return len(*c.hand) - c.handOff
+}
+
+// setReadTrafficSecret switches the read side to a new TLS 1.3 traffic secret.
+// There must be no buffered handshake data at that point: it was encrypted
+// under the old keys and must not be processed as if it arrived under the new
+// ones (for example a server Finished pipelined with the ServerHello).
+// See CVE-2025-61730.
+func (c *Conn) setReadTrafficSecret(suite *cipherSuiteTLS13, secret []byte) error {
+	if c.handLen() != 0 {
+		c.sendAlert(alertUnexpectedMessage)
+		return errors.New("tls: handshake buffer not empty before setting read traffic secret")
+	}
+	c.in.setTrafficSecret(suite, secret)
+	return nil
 }
 
 // Session returns user session

@@ -289,6 +289,18 @@ func (c *Conn) loadSession(hello *clientHelloMsg) (cacheKey string,
 		if err := serverCert.VerifyHostname(c.config.ServerName); err != nil {
 			return cacheKey, nil, nil, nil
 		}
+		// Make sure the full cached chain is still valid and still rooted in
+		// the currently configured RootCAs, not only the leaf. See CVE-2025-68121.
+		opts := x509.VerifyOptions{
+			CurrentTime: c.config.time(),
+			Roots:       c.config.RootCAs,
+			KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		}
+		if !anyValidVerifiedChain(session.verifiedChains, opts) {
+			// No valid chains, delete the entry.
+			c.config.ClientSessionCache.Put(cacheKey, nil)
+			return cacheKey, nil, nil, nil
+		}
 	}
 
 	if session.vers != VersionTLS13 {
@@ -299,6 +311,12 @@ func (c *Conn) loadSession(hello *clientHelloMsg) (cacheKey string,
 		}
 
 		hello.sessionTicket = session.sessionTicket
+		if _, err := hello.marshalChecked(); err != nil {
+			// The ticket is too large to be sent, don't resume.
+			hello.sessionTicket = nil
+			c.config.ClientSessionCache.Put(cacheKey, nil)
+			return cacheKey, nil, nil, nil
+		}
 		return
 	}
 
@@ -334,6 +352,13 @@ func (c *Conn) loadSession(hello *clientHelloMsg) (cacheKey string,
 	}
 	hello.pskIdentities = []pskIdentity{identity}
 	hello.pskBinders = [][]byte{make([]byte, cipherSuite.hash.Size())}
+	if _, err := hello.marshalChecked(); err != nil {
+		// The ticket is too large to be sent, don't resume.
+		hello.pskIdentities = nil
+		hello.pskBinders = nil
+		c.config.ClientSessionCache.Put(cacheKey, nil)
+		return cacheKey, nil, nil, nil
+	}
 
 	// Compute the PSK binders. See RFC 8446, Section 4.2.11.2.
 	psk := cipherSuite.expandLabel(session.masterSecret, "resumption",
@@ -824,6 +849,10 @@ func (hs *clientHandshakeState) sendFinished(out []byte) error {
 
 // verifyServerCertificate parses and verifies the provided chain, setting
 // c.verifiedChains and c.peerCertificates or sending the appropriate alert.
+// maxRSAKeySize is the maximum RSA key size in bits that we are willing
+// to verify the signatures of during a TLS handshake. See CVE-2023-29409.
+const maxRSAKeySize = 8192
+
 func (c *Conn) verifyServerCertificate(certificates [][]byte) error {
 	certs := make([]*x509.Certificate, len(certificates))
 	for i, asn1Data := range certificates {
@@ -831,6 +860,10 @@ func (c *Conn) verifyServerCertificate(certificates [][]byte) error {
 		if err != nil {
 			c.sendAlert(alertBadCertificate)
 			return errors.New("tls: failed to parse certificate from server: " + err.Error())
+		}
+		if cert.PublicKeyAlgorithm == x509.RSA && cert.PublicKey.(*rsa.PublicKey).N.BitLen() > maxRSAKeySize {
+			c.sendAlert(alertBadCertificate)
+			return fmt.Errorf("tls: server sent certificate containing RSA key larger than %d bits", maxRSAKeySize)
 		}
 		certs[i] = cert
 	}

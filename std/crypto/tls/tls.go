@@ -60,8 +60,9 @@ func NewConn(conn net.Conn, config *Config, isClient bool, isNonBlock bool, v ..
 // at least one certificate or else set GetCertificate.
 func Server(conn net.Conn, config *Config) *Conn {
 	c := &Conn{
-		conn:   conn,
-		config: config,
+		conn:      conn,
+		config:    config,
+		allocator: &NativeAllocator{},
 	}
 	c.handshakeFn = c.serverHandshake
 	return c
@@ -73,9 +74,10 @@ func Server(conn net.Conn, config *Config) *Conn {
 // InsecureSkipVerify in the config.
 func Client(conn net.Conn, config *Config) *Conn {
 	c := &Conn{
-		conn:     conn,
-		config:   config,
-		isClient: true,
+		conn:      conn,
+		config:    config,
+		isClient:  true,
+		allocator: &NativeAllocator{},
 	}
 	c.handshakeFn = c.clientHandshake
 	return c

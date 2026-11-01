@@ -136,7 +136,7 @@ func (hs *serverHandshakeState) handshake() error {
 			hs.err = err
 			return err
 		}
-		if err := hs.establishKeys(); err != nil {
+		if err := hs.establishKeys(stateServerHandshakeEstablishKeys); err != nil {
 			hs.err = err
 			return err
 		}
@@ -171,7 +171,7 @@ func (hs *serverHandshakeState) handshake() error {
 			}
 			return err
 		}
-		if err := hs.establishKeys(); err != nil {
+		if err := hs.establishKeys(stateServerHandshakeEstablishKeys2); err != nil {
 			hs.err = err
 			return err
 		}
@@ -299,12 +299,13 @@ func (hs *serverHandshakeState) processClientHello() error {
 		c.serverName = hs.clientHello.serverName
 	}
 
-	if len(hs.clientHello.alpnProtocols) > 0 {
-		if selectedProto := mutualProtocol(hs.clientHello.alpnProtocols, c.config.NextProtos); selectedProto != "" {
-			hs.hello.alpnProtocol = selectedProto
-			c.clientProtocol = selectedProto
-		}
+	selectedProto, err := negotiateALPN(c.config.NextProtos, hs.clientHello.alpnProtocols)
+	if err != nil {
+		c.sendAlert(alertNoApplicationProtocol)
+		return err
 	}
+	hs.hello.alpnProtocol = selectedProto
+	c.clientProtocol = selectedProto
 
 	hs.cert, err = c.config.getCertificate(clientHelloInfo(c, hs.clientHello))
 	if err != nil {
@@ -354,6 +355,36 @@ func (hs *serverHandshakeState) processClientHello() error {
 	}
 
 	return nil
+}
+
+// negotiateALPN picks a shared ALPN protocol that both sides support in server
+// preference order. If ALPN is not configured or the peer doesn't support it,
+// it returns "" and no error. If both sides offer ALPN but share no protocol,
+// the connection is rejected as required by RFC 7301, Section 3.2, which
+// protects against cross-protocol attacks such as ALPACA.
+func negotiateALPN(serverProtos, clientProtos []string) (string, error) {
+	if len(serverProtos) == 0 || len(clientProtos) == 0 {
+		return "", nil
+	}
+	var http11fallback bool
+	for _, s := range serverProtos {
+		for _, c := range clientProtos {
+			if s == c {
+				return s, nil
+			}
+			if s == "h2" && c == "http/1.1" {
+				http11fallback = true
+			}
+		}
+	}
+	// As a special case, let http/1.1 clients connect to h2 servers as if they
+	// didn't support ALPN. Many HTTP servers are configured with only "h2",
+	// but expect to accept connections from "http/1.1" clients.
+	if http11fallback {
+		return "", nil
+	}
+	// Quote the attacker-controlled protocol names. See CVE-2025-58189.
+	return "", fmt.Errorf("tls: client requested unsupported application protocols (%q)", clientProtos)
 }
 
 // supportsECDHE returns whether ECDHE key exchanges can be used with this
@@ -811,12 +842,16 @@ func (hs *serverHandshakeState) doFullHandshake() error {
 	return nil
 }
 
-func (hs *serverHandshakeState) establishKeys() error {
+// establishKeys is used by both the resumption and the full handshake, which
+// have different positions in the state sequence, so the caller passes the
+// state to record. Using the full handshake state on resumption would skip
+// sendSessionTicket and sendFinished, and the handshake would never complete.
+func (hs *serverHandshakeState) establishKeys(state uint32) error {
 	c := hs.c
-	if c.handshakeStatusAsync >= stateServerHandshakeEstablishKeys2 {
+	if c.handshakeStatusAsync >= state {
 		return nil
 	}
-	c.handshakeStatusAsync = stateServerHandshakeEstablishKeys2
+	c.handshakeStatusAsync = state
 
 	clientMAC, serverMAC, clientKey, serverKey, clientIV, serverIV :=
 		keysFromMasterSecret(c.vers, hs.suite, hs.masterSecret, hs.clientHello.random, hs.hello.random, hs.suite.macLen, hs.suite.keyLen, hs.suite.ivLen)
@@ -920,7 +955,7 @@ func (hs *serverHandshakeState) sendSessionTicket() error {
 		certificates: certsFromClient,
 	}
 	var err error
-	m.ticket, err = c.encryptTicket(state.marshal())
+	m.ticket, err = c.encryptTicketForState(state.marshal)
 	if err != nil {
 		return err
 	}
@@ -969,7 +1004,7 @@ func (hs *serverHandshakeState) sendSessionTicket2() error {
 		certificates: certsFromClient,
 	}
 	var err error
-	m.ticket, err = c.encryptTicket(state.marshal())
+	m.ticket, err = c.encryptTicketForState(state.marshal)
 	if err != nil {
 		return err
 	}
@@ -1041,6 +1076,10 @@ func (c *Conn) processCertsFromClient(certificate Certificate) error {
 		if certs[i], err = x509.ParseCertificate(asn1Data); err != nil {
 			c.sendAlert(alertBadCertificate)
 			return errors.New("tls: failed to parse client certificate: " + err.Error())
+		}
+		if certs[i].PublicKeyAlgorithm == x509.RSA && certs[i].PublicKey.(*rsa.PublicKey).N.BitLen() > maxRSAKeySize {
+			c.sendAlert(alertBadCertificate)
+			return fmt.Errorf("tls: client sent certificate containing RSA key larger than %d bits", maxRSAKeySize)
 		}
 	}
 
