@@ -103,6 +103,8 @@ const (
 	extensionCertificateAuthorities  uint16 = 47
 	extensionSignatureAlgorithmsCert uint16 = 50
 	extensionKeyShare                uint16 = 51
+	extensionECHOuterExtensions      uint16 = 0xfd00
+	extensionEncryptedClientHello    uint16 = 0xfe0d
 	extensionRenegotiationInfo       uint16 = 0xff01
 )
 
@@ -269,6 +271,10 @@ type ConnectionState struct {
 	// only set for TLS 1.3 handshakes (including resumptions using
 	// psk_dhe_ke), and is zero otherwise.
 	CurveID CurveID
+
+	// ECHAccepted indicates if Encrypted Client Hello was offered by the client
+	// and accepted by the server.
+	ECHAccepted bool
 
 	// NegotiatedProtocol is the application protocol negotiated with ALPN.
 	NegotiatedProtocol string
@@ -734,6 +740,68 @@ type Config struct {
 	// used for debugging.
 	KeyLogWriter io.Writer
 
+	// EncryptedClientHelloConfigList is a serialized ECHConfigList. If
+	// provided, clients will attempt to connect to servers using Encrypted
+	// Client Hello (ECH) using one of the provided ECHConfigs.
+	//
+	// Servers do not use this field. In order to configure ECH for servers, see
+	// the EncryptedClientHelloKeys field.
+	//
+	// If the list contains no valid ECH configs, the handshake will fail
+	// and return an error.
+	//
+	// If EncryptedClientHelloConfigList is set, MinVersion, if set, must
+	// be VersionTLS13.
+	//
+	// When EncryptedClientHelloConfigList is set, the handshake will only
+	// succeed if ECH is successfully negotiated. If the server rejects ECH,
+	// an ECHRejectionError error will be returned, which may contain a new
+	// ECHConfigList that the server suggests using.
+	EncryptedClientHelloConfigList []byte
+
+	// EncryptedClientHelloRejectionVerify, if not nil, is called when ECH is
+	// rejected by the remote server, in order to verify the ECH provider
+	// certificate in the outer ClientHello. If it returns a non-nil error, the
+	// handshake is aborted and that error results.
+	//
+	// On the server side this field is not used.
+	//
+	// Unlike VerifyPeerCertificate and VerifyConnection, normal certificate
+	// verification will not be performed before calling
+	// EncryptedClientHelloRejectionVerify.
+	//
+	// If EncryptedClientHelloRejectionVerify is nil and ECH is rejected, the
+	// roots in RootCAs will be used to verify the ECH providers public
+	// certificate. VerifyPeerCertificate and VerifyConnection are not called
+	// when ECH is rejected, even if set, and InsecureSkipVerify is ignored.
+	EncryptedClientHelloRejectionVerify func(ConnectionState) error
+
+	// GetEncryptedClientHelloKeys, if not nil, is called by a server when a
+	// client attempts ECH.
+	//
+	// If GetEncryptedClientHelloKeys is not nil, EncryptedClientHelloKeys is
+	// ignored.
+	//
+	// If GetEncryptedClientHelloKeys returns an error, the handshake will be
+	// aborted and the error will be returned. Otherwise,
+	// GetEncryptedClientHelloKeys must return a non-nil slice of
+	// EncryptedClientHelloKey that represents the acceptable ECH keys.
+	GetEncryptedClientHelloKeys func(*ClientHelloInfo) ([]EncryptedClientHelloKey, error)
+
+	// EncryptedClientHelloKeys are the ECH keys to use when a client
+	// attempts ECH.
+	//
+	// If EncryptedClientHelloKeys is set, MinVersion, if set, must be
+	// VersionTLS13.
+	//
+	// If a client attempts ECH, but it is rejected by the server, the server
+	// will send a list of configs to retry based on the set of
+	// EncryptedClientHelloKeys which have the SendAsRetry field set.
+	//
+	// On the client side, this field is ignored. In order to configure ECH for
+	// clients, see the EncryptedClientHelloConfigList field.
+	EncryptedClientHelloKeys []EncryptedClientHelloKey
+
 	// mutex protects sessionTicketKeys and autoSessionTicketKeys.
 	mutex sync.RWMutex
 	// sessionTicketKeys contains zero or more ticket keys. If set, it means the
@@ -825,7 +893,38 @@ func (c *Config) Clone() *Config {
 		KeyLogWriter:                c.KeyLogWriter,
 		sessionTicketKeys:           c.sessionTicketKeys,
 		autoSessionTicketKeys:       c.autoSessionTicketKeys,
+
+		EncryptedClientHelloConfigList:      c.EncryptedClientHelloConfigList,
+		EncryptedClientHelloRejectionVerify: c.EncryptedClientHelloRejectionVerify,
+		GetEncryptedClientHelloKeys:         c.GetEncryptedClientHelloKeys,
+		EncryptedClientHelloKeys:            c.EncryptedClientHelloKeys,
 	}
+}
+
+// EncryptedClientHelloKey holds a private key that is associated
+// with a specific ECH config known to a client.
+type EncryptedClientHelloKey struct {
+	// Config should be a marshalled ECHConfig associated with PrivateKey. This
+	// must match the config provided to clients byte-for-byte. The config must
+	// use DHKEM(X25519, HKDF-SHA256) (0x0020) as KEM, and as KDF one of
+	//
+	//   - HKDF-SHA256 (0x0001)
+	//   - HKDF-SHA384 (0x0002)
+	//   - HKDF-SHA512 (0x0003)
+	//
+	// and as AEAD one of
+	//
+	//   - AES-128-GCM (0x0001)
+	//   - AES-256-GCM (0x0002)
+	//   - ChaCha20Poly1305 (0x0003)
+	Config []byte
+	// PrivateKey should be a marshalled X25519 private key, in the format
+	// expected by HPKE's DeserializePrivateKey (see RFC 9180).
+	PrivateKey []byte
+	// SendAsRetry indicates if Config should be sent as part of the list of
+	// retry configs when ECH is requested by the client but rejected by the
+	// server.
+	SendAsRetry bool
 }
 
 // deprecatedSessionTicketKey is set as the prefix of SessionTicketKey if it was
@@ -989,6 +1088,11 @@ func (c *Config) supportedVersions() []uint16 {
 	versions := make([]uint16, 0, len(supportedVersions))
 	for _, v := range supportedVersions {
 		if (c == nil || c.MinVersion == 0) && v < VersionTLS12 {
+			continue
+		}
+		// ECH requires TLS 1.3. EncryptedClientHelloConfigList is only used
+		// by clients.
+		if c != nil && c.EncryptedClientHelloConfigList != nil && v < VersionTLS13 {
 			continue
 		}
 		if c != nil && c.MinVersion != 0 && v < c.MinVersion {

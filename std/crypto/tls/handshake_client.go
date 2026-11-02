@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/lesismal/llib/std/crypto/internal/hpke"
 )
 
 type clientHandshakeState struct {
@@ -32,27 +34,27 @@ type clientHandshakeState struct {
 	session      *ClientSessionState
 }
 
-func (c *Conn) makeClientHello() (*clientHelloMsg, ecdheParameters, error) {
+func (c *Conn) makeClientHello() (*clientHelloMsg, ecdheParameters, *echClientContext, error) {
 	config := c.config
 	if len(config.ServerName) == 0 && !config.InsecureSkipVerify {
-		return nil, nil, errors.New("tls: either ServerName or InsecureSkipVerify must be specified in the tls.Config")
+		return nil, nil, nil, errors.New("tls: either ServerName or InsecureSkipVerify must be specified in the tls.Config")
 	}
 
 	nextProtosLength := 0
 	for _, proto := range config.NextProtos {
 		if l := len(proto); l == 0 || l > 255 {
-			return nil, nil, errors.New("tls: invalid NextProtos value")
+			return nil, nil, nil, errors.New("tls: invalid NextProtos value")
 		} else {
 			nextProtosLength += 1 + l
 		}
 	}
 	if nextProtosLength > 0xffff {
-		return nil, nil, errors.New("tls: NextProtos values too large")
+		return nil, nil, nil, errors.New("tls: NextProtos values too large")
 	}
 
 	supportedVersions := config.supportedVersions()
 	if len(supportedVersions) == 0 {
-		return nil, nil, errors.New("tls: no supported versions satisfy MinVersion and MaxVersion")
+		return nil, nil, nil, errors.New("tls: no supported versions satisfy MinVersion and MaxVersion")
 	}
 
 	clientHelloVersion := config.maxSupportedVersion()
@@ -103,14 +105,14 @@ func (c *Conn) makeClientHello() (*clientHelloMsg, ecdheParameters, error) {
 
 	_, err := io.ReadFull(config.rand(), hello.random)
 	if err != nil {
-		return nil, nil, errors.New("tls: short read from Rand: " + err.Error())
+		return nil, nil, nil, errors.New("tls: short read from Rand: " + err.Error())
 	}
 
 	// A random session ID is used to detect when the server accepted a ticket
 	// and is resuming a session (see RFC 5077). In TLS 1.3, it's always set as
 	// a compatibility measure (see RFC 8446, Section 4.1.2).
 	if _, err := io.ReadFull(config.rand(), hello.sessionId); err != nil {
-		return nil, nil, errors.New("tls: short read from Rand: " + err.Error())
+		return nil, nil, nil, errors.New("tls: short read from Rand: " + err.Error())
 	}
 
 	if hello.vers >= VersionTLS12 {
@@ -126,7 +128,7 @@ func (c *Conn) makeClientHello() (*clientHelloMsg, ecdheParameters, error) {
 		if curveID == X25519MLKEM768 {
 			hybrid, err := generateX25519MLKEM768Parameters(config.rand())
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			params = hybrid
 			hello.keyShares = []keyShare{{group: X25519MLKEM768, data: hybrid.PublicKey()}}
@@ -138,11 +140,11 @@ func (c *Conn) makeClientHello() (*clientHelloMsg, ecdheParameters, error) {
 			}
 		} else {
 			if _, ok := curveForCurveID(curveID); curveID != X25519 && !ok {
-				return nil, nil, errors.New("tls: CurvePreferences includes unsupported curve")
+				return nil, nil, nil, errors.New("tls: CurvePreferences includes unsupported curve")
 			}
 			params, err = generateECDHEParameters(config.rand(), curveID)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			hello.keyShares = []keyShare{{group: curveID, data: params.PublicKey()}}
 		}
@@ -151,7 +153,40 @@ func (c *Conn) makeClientHello() (*clientHelloMsg, ecdheParameters, error) {
 		hello.supportedCurves = config.curvePreferencesTLS12()
 	}
 
-	return hello, params, nil
+	var ech *echClientContext
+	if config.EncryptedClientHelloConfigList != nil {
+		if config.MinVersion != 0 && config.MinVersion < VersionTLS13 {
+			return nil, nil, nil, errors.New("tls: MinVersion must be >= VersionTLS13 if EncryptedClientHelloConfigList is populated")
+		}
+		if config.MaxVersion != 0 && config.MaxVersion <= VersionTLS12 {
+			return nil, nil, nil, errors.New("tls: MaxVersion must be >= VersionTLS13 if EncryptedClientHelloConfigList is populated")
+		}
+		echConfigs, err := parseECHConfigList(config.EncryptedClientHelloConfigList)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		echConfig, echCS := pickECHConfig(echConfigs)
+		if echConfig == nil {
+			return nil, nil, nil, errors.New("tls: EncryptedClientHelloConfigList contains no valid configs")
+		}
+		ech = &echClientContext{config: echConfig, kdfID: echCS.KDFID, aeadID: echCS.AEADID}
+		hello.encryptedClientHello = []byte{1} // indicate inner hello
+		// We need to explicitly set these 1.2 fields to nil, as we do not
+		// marshal them when encoding the inner hello, otherwise transcripts
+		// will later mismatch.
+		hello.supportedPoints = nil
+		hello.ticketSupported = false
+		hello.secureRenegotiationSupported = false
+		hello.extendedMasterSecret = false
+
+		info := append([]byte("tls ech\x00"), ech.config.raw...)
+		ech.encapsulatedKey, ech.hpkeContext, err = hpke.SetupSender(echConfig.KemID, ech.kdfID, ech.aeadID, echConfig.PublicKey, info, config.rand())
+		if err != nil {
+			return nil, nil, nil, err
+		}
+	}
+
+	return hello, params, ech, nil
 }
 
 func (c *Conn) clientHandshake() (err error) {
@@ -164,11 +199,12 @@ func (c *Conn) clientHandshake() (err error) {
 	c.didResume = false
 	c.extMasterSecret = false
 
-	hello, ecdheParams, err := c.makeClientHello()
+	c.echAccepted = false
+
+	hello, ecdheParams, ech, err := c.makeClientHello()
 	if err != nil {
 		return err
 	}
-	c.serverName = hello.serverName
 
 	cacheKey, session, earlySecret, binderKey := c.loadSession(hello)
 	if cacheKey != "" && session != nil {
@@ -184,6 +220,26 @@ func (c *Conn) clientHandshake() (err error) {
 			}
 		}()
 	}
+
+	if ech != nil {
+		// Split hello into inner and outer.
+		ech.innerHello = hello.clone()
+
+		// Overwrite the server name in the outer hello with the public facing
+		// name.
+		hello.serverName = string(ech.config.PublicName)
+		// Generate a new random for the outer hello.
+		hello.random = make([]byte, 32)
+		if _, err := io.ReadFull(c.config.rand(), hello.random); err != nil {
+			return errors.New("tls: short read from Rand: " + err.Error())
+		}
+
+		if err := computeAndUpdateOuterECHExtension(hello, ech.innerHello, ech, true); err != nil {
+			return err
+		}
+	}
+
+	c.serverName = hello.serverName
 
 	if _, err := c.writeRecord(recordTypeHandshake, hello.marshal()); err != nil {
 		return err
@@ -227,6 +283,7 @@ func (c *Conn) clientHandshake() (err error) {
 			session:     session,
 			earlySecret: earlySecret,
 			binderKey:   binderKey,
+			echContext:  ech,
 		}
 
 		// In TLS 1.3, session tickets are delivered after the handshake.
@@ -259,7 +316,10 @@ func (c *Conn) loadSession(hello *clientHelloMsg) (cacheKey string,
 		return "", nil, nil, nil
 	}
 
-	hello.ticketSupported = true
+	// ticketSupported is a TLS 1.2 extension (as TLS 1.3 replaced tickets with
+	// PSK identities) and ECH requires and forces TLS 1.3.
+	echInner := bytes.Equal(hello.encryptedClientHello, []byte{1})
+	hello.ticketSupported = !echInner
 
 	if hello.supportedVersions[0] == VersionTLS13 {
 		// Require DHE on resumption as it guarantees forward secrecy against
@@ -904,7 +964,36 @@ func (c *Conn) verifyServerCertificate(certificates [][]byte) error {
 		certs[i] = cert
 	}
 
-	if !c.config.InsecureSkipVerify {
+	// If ECH was rejected, the server authenticates as the ECH provider,
+	// using the public name of the outer ClientHello (c.serverName). The
+	// handshake then fails with an ECHRejectionError once it completes.
+	echRejected := c.config.EncryptedClientHelloConfigList != nil && !c.echAccepted
+	if echRejected {
+		if c.config.EncryptedClientHelloRejectionVerify != nil {
+			// Unlike crypto/tls, expose the certificates being verified.
+			c.peerCertificates = certs
+			if err := c.config.EncryptedClientHelloRejectionVerify(c.connectionStateLocked()); err != nil {
+				c.sendAlert(alertBadCertificate)
+				return err
+			}
+		} else {
+			opts := x509.VerifyOptions{
+				Roots:         c.config.RootCAs,
+				CurrentTime:   c.config.time(),
+				DNSName:       c.serverName,
+				Intermediates: x509.NewCertPool(),
+			}
+			for _, cert := range certs[1:] {
+				opts.Intermediates.AddCert(cert)
+			}
+			var err error
+			c.verifiedChains, err = certs[0].Verify(opts)
+			if err != nil {
+				c.sendAlert(alertBadCertificate)
+				return err
+			}
+		}
+	} else if !c.config.InsecureSkipVerify {
 		opts := x509.VerifyOptions{
 			Roots:         c.config.RootCAs,
 			CurrentTime:   c.config.time(),
@@ -932,14 +1021,14 @@ func (c *Conn) verifyServerCertificate(certificates [][]byte) error {
 
 	c.peerCertificates = certs
 
-	if c.config.VerifyPeerCertificate != nil {
+	if c.config.VerifyPeerCertificate != nil && !echRejected {
 		if err := c.config.VerifyPeerCertificate(certificates, c.verifiedChains); err != nil {
 			c.sendAlert(alertBadCertificate)
 			return err
 		}
 	}
 
-	if c.config.VerifyConnection != nil {
+	if c.config.VerifyConnection != nil && !echRejected {
 		if err := c.config.VerifyConnection(c.connectionStateLocked()); err != nil {
 			c.sendAlert(alertBadCertificate)
 			return err

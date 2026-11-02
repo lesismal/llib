@@ -89,6 +89,7 @@ type Conn struct {
 	handshakes       int
 	cipherSuite      uint16
 	curveID          CurveID
+	echAccepted      bool     // whether Encrypted Client Hello was accepted
 	ocspResponse     []byte   // stapled OCSP response
 	scts             [][]byte // signed certificate timestamps from server
 	peerCertificates []*x509.Certificate
@@ -189,6 +190,7 @@ type Conn struct {
 	serverHello          *serverHelloMsg
 	hs                   *serverHandshakeState
 	hs13                 *serverHandshakeStateTLS13
+	echServer            *echServerContext // server ECH state, see readClientHello
 	certMsg              *certificateMsgTLS13
 	certMsgVerified      []bool
 
@@ -1863,6 +1865,7 @@ func (c *Conn) connectionStateLocked() ConnectionState {
 	state.ServerName = c.serverName
 	state.CipherSuite = c.cipherSuite
 	state.CurveID = c.curveID
+	state.ECHAccepted = c.echAccepted
 	state.PeerCertificates = c.peerCertificates
 	state.VerifiedChains = c.verifiedChains
 	state.SignedCertificateTimestamps = c.scts

@@ -738,7 +738,7 @@ func TestWarningAlertFlood(t *testing.T) {
 }
 
 func TestCloneFuncFields(t *testing.T) {
-	const expectedCount = 6
+	const expectedCount = 8
 	called := 0
 
 	c1 := Config{
@@ -766,6 +766,14 @@ func TestCloneFuncFields(t *testing.T) {
 			called |= 1 << 5
 			return nil
 		},
+		EncryptedClientHelloRejectionVerify: func(ConnectionState) error {
+			called |= 1 << 6
+			return nil
+		},
+		GetEncryptedClientHelloKeys: func(*ClientHelloInfo) ([]EncryptedClientHelloKey, error) {
+			called |= 1 << 7
+			return nil, nil
+		},
 	}
 
 	c2 := c1.Clone()
@@ -776,6 +784,8 @@ func TestCloneFuncFields(t *testing.T) {
 	c2.GetConfigForClient(nil)
 	c2.VerifyPeerCertificate(nil, nil)
 	c2.VerifyConnection(ConnectionState{})
+	c2.EncryptedClientHelloRejectionVerify(ConnectionState{})
+	c2.GetEncryptedClientHelloKeys(nil)
 
 	if called != (1<<expectedCount)-1 {
 		t.Fatalf("expected %d calls but saw calls %b", expectedCount, called)
@@ -794,7 +804,8 @@ func TestCloneNonFuncFields(t *testing.T) {
 		switch fn := typ.Field(i).Name; fn {
 		case "Rand":
 			f.Set(reflect.ValueOf(io.Reader(os.Stdin)))
-		case "Time", "GetCertificate", "GetConfigForClient", "VerifyPeerCertificate", "VerifyConnection", "GetClientCertificate":
+		case "Time", "GetCertificate", "GetConfigForClient", "VerifyPeerCertificate", "VerifyConnection", "GetClientCertificate",
+			"EncryptedClientHelloRejectionVerify", "GetEncryptedClientHelloKeys":
 			// DeepEqual can't compare functions. If you add a
 			// function field to this list, you must also change
 			// TestCloneFuncFields to ensure that the func field is
@@ -829,6 +840,10 @@ func TestCloneNonFuncFields(t *testing.T) {
 			f.Set(reflect.ValueOf([]CurveID{CurveP256}))
 		case "Renegotiation":
 			f.Set(reflect.ValueOf(RenegotiateOnceAsClient))
+		case "EncryptedClientHelloConfigList":
+			f.Set(reflect.ValueOf([]byte{'x'}))
+		case "EncryptedClientHelloKeys":
+			f.Set(reflect.ValueOf([]EncryptedClientHelloKey{{Config: []byte{1}, PrivateKey: []byte{2}}}))
 		case "mutex", "autoSessionTicketKeys", "sessionTicketKeys":
 			continue // these are unexported fields that are handled separately
 		default:

@@ -101,6 +101,7 @@ func (c *Conn) serverHandshake() error {
 			hs = &serverHandshakeStateTLS13{
 				c:           c,
 				clientHello: c.clientHello,
+				echContext:  c.echServer,
 			}
 			c.hs13 = hs
 		}
@@ -224,6 +225,25 @@ func (c *Conn) readClientHello() (*clientHelloMsg, error) {
 		return nil, unexpectedMessageError(clientHello, msg)
 	}
 
+	// ECH processing has to be done before we do any other negotiation based on
+	// the contents of the client hello, since we may swap it out completely.
+	var ech *echServerContext
+	if len(clientHello.encryptedClientHello) != 0 {
+		echKeys := c.config.EncryptedClientHelloKeys
+		if c.config.GetEncryptedClientHelloKeys != nil {
+			echKeys, err = c.config.GetEncryptedClientHelloKeys(clientHelloInfo(c, clientHello))
+			if err != nil {
+				c.sendAlert(alertInternalError)
+				return nil, err
+			}
+		}
+		clientHello, ech, err = c.processECHClientHello(clientHello, echKeys)
+		if err != nil {
+			return nil, err
+		}
+	}
+	c.echServer = ech
+
 	var configForClient *Config
 	originalConfig := c.config
 	if c.config.GetConfigForClient != nil {
@@ -249,6 +269,15 @@ func (c *Conn) readClientHello() (*clientHelloMsg, error) {
 	c.haveVers = true
 	c.in.version = c.vers
 	c.out.version = c.vers
+
+	// Client-facing servers must reject an outer ECH ClientHello whose inner
+	// ClientHello offers TLS 1.2, but backend servers may accept an inner
+	// ClientHello offering TLS 1.2. Like crypto/tls and BoringSSL, only
+	// require TLS 1.3 after decrypting an outer ClientHello.
+	if c.vers != VersionTLS13 && (ech != nil && !ech.inner) {
+		c.sendAlert(alertIllegalParameter)
+		return nil, errors.New("tls: Encrypted Client Hello cannot be used pre-TLS 1.3")
+	}
 
 	return clientHello, nil
 }
