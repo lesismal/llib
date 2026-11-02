@@ -150,7 +150,8 @@ func sha1OnlyClientHello(typ byte, body []byte) {
 func noSigAlgsClientHello(typ byte, body []byte) {
 	if typ == 1 {
 		if _, off := clientHelloExt(body, 13); off >= 0 {
-			body[off], body[off+1] = 0xfe, 0x0d // unknown extension
+			// A GREASE extension type (RFC 8701), which must be ignored.
+			body[off], body[off+1] = 0x0a, 0x0a
 		}
 	}
 }

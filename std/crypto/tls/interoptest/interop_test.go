@@ -80,7 +80,8 @@ func newPKI(t *testing.T) *pki {
 	p.caDER, p.caCert = mkCert(t, caT, caT, &p.caKey.PublicKey, p.caKey)
 	p.interDER, p.interCert = mkCert(t, tmpl("inter", true, nil), p.caCert, &p.interKey.PublicKey, p.caKey)
 	st := tmpl("server", false, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth})
-	st.DNSNames = []string{"example.test"}
+	// public.example.test is the public name of the ECH provider in ech_test.go.
+	st.DNSNames = []string{"example.test", "public.example.test"}
 	p.srvDER, p.srvCert = mkCert(t, st, p.caCert, &p.srvKey.PublicKey, p.caKey)
 	p.cliDER, p.cliCert = mkCert(t, tmpl("client", false, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}), p.interCert, &p.cliKey.PublicKey, p.interKey)
 	p.pool = x509.NewCertPool()
