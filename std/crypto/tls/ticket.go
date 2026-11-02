@@ -26,13 +26,17 @@ type sessionState struct {
 	masterSecret []byte // opaque master_secret<1..2^16-1>;
 	// struct { opaque certificate<1..2^24-1> } Certificate;
 	certificates [][]byte // Certificate certificate_list<0..2^24-1>;
+	// uint8 ext_master_secret; added for RFC 7627. Tickets issued before it
+	// was added lack this byte and are rejected, falling back to a full
+	// handshake.
+	extMasterSecret bool
 
 	// usedOldKey is true if the ticket from which this session came from
 	// was encrypted with an older key and thus should be refreshed.
 	usedOldKey bool
 }
 
-func (m *sessionState) marshal() []byte {
+func (m *sessionState) marshal() ([]byte, error) {
 	var b cryptobyte.Builder
 	b.AddUint16(m.vers)
 	b.AddUint16(m.cipherSuite)
@@ -47,7 +51,12 @@ func (m *sessionState) marshal() []byte {
 			})
 		}
 	})
-	return b.BytesOrPanic()
+	if m.extMasterSecret {
+		b.AddUint8(1)
+	} else {
+		b.AddUint8(0)
+	}
+	return b.Bytes()
 }
 
 func (m *sessionState) unmarshal(data []byte) bool {
@@ -71,6 +80,18 @@ func (m *sessionState) unmarshal(data []byte) bool {
 		}
 		m.certificates = append(m.certificates, cert)
 	}
+	var extMasterSecret uint8
+	if !s.ReadUint8(&extMasterSecret) {
+		return false
+	}
+	switch extMasterSecret {
+	case 0:
+		m.extMasterSecret = false
+	case 1:
+		m.extMasterSecret = true
+	default:
+		return false
+	}
 	return s.Empty()
 }
 
@@ -86,7 +107,7 @@ type sessionStateTLS13 struct {
 	certificate      Certificate // CertificateEntry certificate_list<0..2^24-1>;
 }
 
-func (m *sessionStateTLS13) marshal() []byte {
+func (m *sessionStateTLS13) marshal() ([]byte, error) {
 	var b cryptobyte.Builder
 	b.AddUint16(VersionTLS13)
 	b.AddUint8(0) // revision
@@ -96,7 +117,7 @@ func (m *sessionStateTLS13) marshal() []byte {
 		b.AddBytes(m.resumptionSecret)
 	})
 	marshalCertificate(&b, m.certificate)
-	return b.BytesOrPanic()
+	return b.Bytes()
 }
 
 func (m *sessionStateTLS13) unmarshal(data []byte) bool {
@@ -114,6 +135,28 @@ func (m *sessionStateTLS13) unmarshal(data []byte) bool {
 		len(m.resumptionSecret) != 0 &&
 		unmarshalCertificate(&s, &m.certificate) &&
 		s.Empty()
+}
+
+// maxSessionTicketLen is the largest ticket that fits in the 16-bit length
+// prefix of the NewSessionTicket message (RFC 5077 and RFC 8446).
+const maxSessionTicketLen = 1<<16 - 1
+
+// encryptTicketForState marshals and encrypts a session state, refusing to
+// produce a ticket that would not fit in a NewSessionTicket message. The state
+// may carry the peer's certificate chain, so its size is attacker controlled.
+func (c *Conn) encryptTicketForState(marshal func() ([]byte, error)) ([]byte, error) {
+	state, err := marshal()
+	if err != nil {
+		return nil, err
+	}
+	ticket, err := c.encryptTicket(state)
+	if err != nil {
+		return nil, err
+	}
+	if len(ticket) > maxSessionTicketLen {
+		return nil, errors.New("tls: session ticket too large")
+	}
+	return ticket, nil
 }
 
 func (c *Conn) encryptTicket(state []byte) ([]byte, error) {

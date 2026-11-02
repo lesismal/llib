@@ -13,7 +13,6 @@ package testenv
 import (
 	"errors"
 	"flag"
-	"internal/cfg"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -85,12 +84,9 @@ func GoToolPath(t testing.TB) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Add all environment variables that affect the Go command to test metadata.
-	// Cached test results will be invalidate when these variables change.
-	// See golang.org/issue/32285.
-	for _, envVar := range strings.Fields(cfg.KnownEnv) {
-		os.Getenv(envVar)
-	}
+	// The standard library version reads all variables in internal/cfg.KnownEnv
+	// here so cached test results depend on them (golang.org/issue/32285).
+	// internal/cfg can't be imported outside the standard library.
 	return path
 }
 

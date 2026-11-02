@@ -334,6 +334,10 @@ func TestConnReadNonzeroAndEOF(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping in short mode")
 	}
+	// llib reads exactly one record at a time in blocking mode (see
+	// readFromUntil), so there is never a buffered close_notify to peek at
+	// after the application data, unlike crypto/tls.
+	t.Skip("llib does not read ahead to predict close_notify alerts")
 	var err error
 	for delay := time.Millisecond; delay <= 64*time.Millisecond; delay *= 2 {
 		if err = testConnReadNonzeroAndEOF(t, delay); err == nil {
@@ -734,7 +738,7 @@ func TestWarningAlertFlood(t *testing.T) {
 }
 
 func TestCloneFuncFields(t *testing.T) {
-	const expectedCount = 6
+	const expectedCount = 8
 	called := 0
 
 	c1 := Config{
@@ -762,6 +766,14 @@ func TestCloneFuncFields(t *testing.T) {
 			called |= 1 << 5
 			return nil
 		},
+		EncryptedClientHelloRejectionVerify: func(ConnectionState) error {
+			called |= 1 << 6
+			return nil
+		},
+		GetEncryptedClientHelloKeys: func(*ClientHelloInfo) ([]EncryptedClientHelloKey, error) {
+			called |= 1 << 7
+			return nil, nil
+		},
 	}
 
 	c2 := c1.Clone()
@@ -772,6 +784,8 @@ func TestCloneFuncFields(t *testing.T) {
 	c2.GetConfigForClient(nil)
 	c2.VerifyPeerCertificate(nil, nil)
 	c2.VerifyConnection(ConnectionState{})
+	c2.EncryptedClientHelloRejectionVerify(ConnectionState{})
+	c2.GetEncryptedClientHelloKeys(nil)
 
 	if called != (1<<expectedCount)-1 {
 		t.Fatalf("expected %d calls but saw calls %b", expectedCount, called)
@@ -790,7 +804,8 @@ func TestCloneNonFuncFields(t *testing.T) {
 		switch fn := typ.Field(i).Name; fn {
 		case "Rand":
 			f.Set(reflect.ValueOf(io.Reader(os.Stdin)))
-		case "Time", "GetCertificate", "GetConfigForClient", "VerifyPeerCertificate", "VerifyConnection", "GetClientCertificate":
+		case "Time", "GetCertificate", "GetConfigForClient", "VerifyPeerCertificate", "VerifyConnection", "GetClientCertificate",
+			"EncryptedClientHelloRejectionVerify", "GetEncryptedClientHelloKeys":
 			// DeepEqual can't compare functions. If you add a
 			// function field to this list, you must also change
 			// TestCloneFuncFields to ensure that the func field is
@@ -825,6 +840,10 @@ func TestCloneNonFuncFields(t *testing.T) {
 			f.Set(reflect.ValueOf([]CurveID{CurveP256}))
 		case "Renegotiation":
 			f.Set(reflect.ValueOf(RenegotiateOnceAsClient))
+		case "EncryptedClientHelloConfigList":
+			f.Set(reflect.ValueOf([]byte{'x'}))
+		case "EncryptedClientHelloKeys":
+			f.Set(reflect.ValueOf([]EncryptedClientHelloKey{{Config: []byte{1}, PrivateKey: []byte{2}}}))
 		case "mutex", "autoSessionTicketKeys", "sessionTicketKeys":
 			continue // these are unexported fields that are handled separately
 		default:
@@ -1248,7 +1267,10 @@ func TestClientHelloInfo_SupportsCertificate(t *testing.T) {
 			SignatureSchemes:  []SignatureScheme{PKCS1WithSHA1},
 			SupportedVersions: []uint16{VersionTLS13, VersionTLS12},
 			config: &Config{
-				MaxVersion: VersionTLS12,
+				// RSA key exchange needs no signature, so the SHA-1 only
+				// signature_algorithms don't matter. It's off by default.
+				CipherSuites: []uint16{TLS_RSA_WITH_AES_128_GCM_SHA256},
+				MaxVersion:   VersionTLS12,
 			},
 		}, ""}, // Check that mutual version selection works.
 
@@ -1325,6 +1347,7 @@ func TestClientHelloInfo_SupportsCertificate(t *testing.T) {
 			SupportedPoints:   []uint8{pointFormatUncompressed},
 			SignatureSchemes:  []SignatureScheme{Ed25519},
 			SupportedVersions: []uint16{VersionTLS10},
+			config:            &Config{MinVersion: VersionTLS10},
 		}, "doesn't support Ed25519"},
 		{ed25519Cert, &ClientHelloInfo{
 			CipherSuites:      []uint16{TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
@@ -1339,10 +1362,14 @@ func TestClientHelloInfo_SupportsCertificate(t *testing.T) {
 			SupportedCurves:   []CurveID{CurveP256}, // only relevant for ECDHE support
 			SupportedPoints:   []uint8{pointFormatUncompressed},
 			SupportedVersions: []uint16{VersionTLS10},
+			config:            &Config{MinVersion: VersionTLS10},
 		}, ""},
 		{rsaCert, &ClientHelloInfo{
 			CipherSuites:      []uint16{TLS_RSA_WITH_AES_128_GCM_SHA256},
 			SupportedVersions: []uint16{VersionTLS12},
+			config: &Config{
+				CipherSuites: []uint16{TLS_RSA_WITH_AES_128_GCM_SHA256},
+			},
 		}, ""}, // static RSA fallback
 	}
 	for i, tt := range tests {

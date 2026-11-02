@@ -93,6 +93,7 @@ const (
 	extensionSignatureAlgorithms     uint16 = 13
 	extensionALPN                    uint16 = 16
 	extensionSCT                     uint16 = 18
+	extensionExtendedMasterSecret    uint16 = 23
 	extensionSessionTicket           uint16 = 35
 	extensionPreSharedKey            uint16 = 41
 	extensionEarlyData               uint16 = 42
@@ -102,6 +103,8 @@ const (
 	extensionCertificateAuthorities  uint16 = 47
 	extensionSignatureAlgorithmsCert uint16 = 50
 	extensionKeyShare                uint16 = 51
+	extensionECHOuterExtensions      uint16 = 0xfd00
+	extensionEncryptedClientHello    uint16 = 0xfe0d
 	extensionRenegotiationInfo       uint16 = 0xff01
 )
 
@@ -114,7 +117,8 @@ const (
 // https://www.iana.org/assignments/tls-parameters/tls-parameters.xml#tls-parameters-8.
 //
 // In TLS 1.3, this type is called NamedGroup, but at this time this library
-// only supports Elliptic Curve based groups. See RFC 8446, Section 4.2.7.
+// only supports Elliptic Curve based groups and the X25519MLKEM768 hybrid. See
+// RFC 8446, Section 4.2.7.
 type CurveID uint16
 
 const (
@@ -122,7 +126,17 @@ const (
 	CurveP384 CurveID = 24
 	CurveP521 CurveID = 25
 	X25519    CurveID = 29
+
+	// X25519MLKEM768 is the hybrid post-quantum key exchange combining X25519
+	// and ML-KEM-768, as specified in draft-ietf-tls-ecdhe-mlkem. It can only
+	// be negotiated in TLS 1.3.
+	X25519MLKEM768 CurveID = 4588
 )
+
+// isTLS13OnlyKeyExchange reports whether curve can only be used in TLS 1.3.
+func isTLS13OnlyKeyExchange(curve CurveID) bool {
+	return curve == X25519MLKEM768
+}
 
 // TLS 1.3 Key Share. See RFC 8446, Section 4.2.8.
 type keyShare struct {
@@ -178,7 +192,30 @@ var directSigning crypto.Hash = 0
 // the code advertises as supported in a TLS 1.2+ ClientHello and in a TLS 1.2+
 // CertificateRequest. The two fields are merged to match with TLS 1.3.
 // Note that in TLS 1.2, the ECDSA algorithms are not constrained to P-256, etc.
+//
+// SHA-1 signature algorithms are not included: TLS 1.3 removed them, and
+// RFC 9155 deprecated them in TLS 1.2 (as did Go 1.25).
 var supportedSignatureAlgorithms = []SignatureScheme{
+	PSSWithSHA256,
+	ECDSAWithP256AndSHA256,
+	Ed25519,
+	PSSWithSHA384,
+	PSSWithSHA512,
+	PKCS1WithSHA256,
+	PKCS1WithSHA384,
+	PKCS1WithSHA512,
+	ECDSAWithP384AndSHA384,
+	ECDSAWithP521AndSHA512,
+}
+
+// supportedSignatureAlgorithmsCert contains the algorithms advertised in the
+// signature_algorithms_cert extension. Unlike supportedSignatureAlgorithms, it
+// includes SHA-1, because it's more likely that something on our side will be
+// willing to accept a *-with-SHA1 certificate (e.g. with a custom
+// VerifyConnection or by a direct match with the CertPool), than that the
+// peer would have a better certificate but is just choosing not to send it.
+// crypto/x509 will refuse to verify important SHA-1 signatures anyway.
+var supportedSignatureAlgorithmsCert = []SignatureScheme{
 	PSSWithSHA256,
 	ECDSAWithP256AndSHA256,
 	Ed25519,
@@ -229,6 +266,15 @@ type ConnectionState struct {
 	// CipherSuite is the cipher suite negotiated for the connection (e.g.
 	// TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256, TLS_AES_128_GCM_SHA256).
 	CipherSuite uint16
+
+	// CurveID is the key exchange mechanism used for the connection. It is
+	// only set for TLS 1.3 handshakes (including resumptions using
+	// psk_dhe_ke), and is zero otherwise.
+	CurveID CurveID
+
+	// ECHAccepted indicates if Encrypted Client Hello was offered by the client
+	// and accepted by the server.
+	ECHAccepted bool
 
 	// NegotiatedProtocol is the application protocol negotiated with ALPN.
 	NegotiatedProtocol string
@@ -335,6 +381,7 @@ type ClientSessionState struct {
 	vers               uint16                // TLS version negotiated for the session
 	cipherSuite        uint16                // Ciphersuite negotiated for the session
 	masterSecret       []byte                // Full handshake MasterSecret, or TLS 1.3 resumption_master_secret
+	extMasterSecret    bool                  // Whether the TLS 1.2 MasterSecret was derived using Extended Master Secret (RFC 7627)
 	serverCertificates []*x509.Certificate   // Certificate chain presented by the server
 	verifiedChains     [][]*x509.Certificate // Certificate chains we built for verification
 	receivedAt         time.Time             // When the session ticket was received from the server
@@ -657,7 +704,9 @@ type Config struct {
 	ClientSessionCache ClientSessionCache
 
 	// MinVersion contains the minimum TLS version that is acceptable.
-	// If zero, TLS 1.0 is currently taken as the minimum.
+	//
+	// By default, TLS 1.2 is currently used as the minimum. TLS 1.0 and
+	// TLS 1.1 can be re-enabled by setting MinVersion explicitly.
 	MinVersion uint16
 
 	// MaxVersion contains the maximum TLS version that is acceptable.
@@ -668,7 +717,9 @@ type Config struct {
 	// CurvePreferences contains the elliptic curves that will be used in
 	// an ECDHE handshake, in preference order. If empty, the default will
 	// be used. The client will use the first preference as the type for
-	// its key share in TLS 1.3. This may change in the future.
+	// its key share in TLS 1.3. If that is X25519MLKEM768 and X25519 is also
+	// enabled, the client additionally sends an X25519 key share reusing the
+	// same X25519 key. X25519MLKEM768 is only used in TLS 1.3.
 	CurvePreferences []CurveID
 
 	// DynamicRecordSizingDisabled disables adaptive sizing of TLS records.
@@ -688,6 +739,68 @@ type Config struct {
 	// Use of KeyLogWriter compromises security and should only be
 	// used for debugging.
 	KeyLogWriter io.Writer
+
+	// EncryptedClientHelloConfigList is a serialized ECHConfigList. If
+	// provided, clients will attempt to connect to servers using Encrypted
+	// Client Hello (ECH) using one of the provided ECHConfigs.
+	//
+	// Servers do not use this field. In order to configure ECH for servers, see
+	// the EncryptedClientHelloKeys field.
+	//
+	// If the list contains no valid ECH configs, the handshake will fail
+	// and return an error.
+	//
+	// If EncryptedClientHelloConfigList is set, MinVersion, if set, must
+	// be VersionTLS13.
+	//
+	// When EncryptedClientHelloConfigList is set, the handshake will only
+	// succeed if ECH is successfully negotiated. If the server rejects ECH,
+	// an ECHRejectionError error will be returned, which may contain a new
+	// ECHConfigList that the server suggests using.
+	EncryptedClientHelloConfigList []byte
+
+	// EncryptedClientHelloRejectionVerify, if not nil, is called when ECH is
+	// rejected by the remote server, in order to verify the ECH provider
+	// certificate in the outer ClientHello. If it returns a non-nil error, the
+	// handshake is aborted and that error results.
+	//
+	// On the server side this field is not used.
+	//
+	// Unlike VerifyPeerCertificate and VerifyConnection, normal certificate
+	// verification will not be performed before calling
+	// EncryptedClientHelloRejectionVerify.
+	//
+	// If EncryptedClientHelloRejectionVerify is nil and ECH is rejected, the
+	// roots in RootCAs will be used to verify the ECH providers public
+	// certificate. VerifyPeerCertificate and VerifyConnection are not called
+	// when ECH is rejected, even if set, and InsecureSkipVerify is ignored.
+	EncryptedClientHelloRejectionVerify func(ConnectionState) error
+
+	// GetEncryptedClientHelloKeys, if not nil, is called by a server when a
+	// client attempts ECH.
+	//
+	// If GetEncryptedClientHelloKeys is not nil, EncryptedClientHelloKeys is
+	// ignored.
+	//
+	// If GetEncryptedClientHelloKeys returns an error, the handshake will be
+	// aborted and the error will be returned. Otherwise,
+	// GetEncryptedClientHelloKeys must return a non-nil slice of
+	// EncryptedClientHelloKey that represents the acceptable ECH keys.
+	GetEncryptedClientHelloKeys func(*ClientHelloInfo) ([]EncryptedClientHelloKey, error)
+
+	// EncryptedClientHelloKeys are the ECH keys to use when a client
+	// attempts ECH.
+	//
+	// If EncryptedClientHelloKeys is set, MinVersion, if set, must be
+	// VersionTLS13.
+	//
+	// If a client attempts ECH, but it is rejected by the server, the server
+	// will send a list of configs to retry based on the set of
+	// EncryptedClientHelloKeys which have the SendAsRetry field set.
+	//
+	// On the client side, this field is ignored. In order to configure ECH for
+	// clients, see the EncryptedClientHelloConfigList field.
+	EncryptedClientHelloKeys []EncryptedClientHelloKey
 
 	// mutex protects sessionTicketKeys and autoSessionTicketKeys.
 	mutex sync.RWMutex
@@ -780,7 +893,38 @@ func (c *Config) Clone() *Config {
 		KeyLogWriter:                c.KeyLogWriter,
 		sessionTicketKeys:           c.sessionTicketKeys,
 		autoSessionTicketKeys:       c.autoSessionTicketKeys,
+
+		EncryptedClientHelloConfigList:      c.EncryptedClientHelloConfigList,
+		EncryptedClientHelloRejectionVerify: c.EncryptedClientHelloRejectionVerify,
+		GetEncryptedClientHelloKeys:         c.GetEncryptedClientHelloKeys,
+		EncryptedClientHelloKeys:            c.EncryptedClientHelloKeys,
 	}
+}
+
+// EncryptedClientHelloKey holds a private key that is associated
+// with a specific ECH config known to a client.
+type EncryptedClientHelloKey struct {
+	// Config should be a marshalled ECHConfig associated with PrivateKey. This
+	// must match the config provided to clients byte-for-byte. The config must
+	// use DHKEM(X25519, HKDF-SHA256) (0x0020) as KEM, and as KDF one of
+	//
+	//   - HKDF-SHA256 (0x0001)
+	//   - HKDF-SHA384 (0x0002)
+	//   - HKDF-SHA512 (0x0003)
+	//
+	// and as AEAD one of
+	//
+	//   - AES-128-GCM (0x0001)
+	//   - AES-256-GCM (0x0002)
+	//   - ChaCha20Poly1305 (0x0003)
+	Config []byte
+	// PrivateKey should be a marshalled X25519 private key, in the format
+	// expected by HPKE's DeserializePrivateKey (see RFC 9180).
+	PrivateKey []byte
+	// SendAsRetry indicates if Config should be sent as part of the list of
+	// retry configs when ECH is requested by the client but rejected by the
+	// server.
+	SendAsRetry bool
 }
 
 // deprecatedSessionTicketKey is set as the prefix of SessionTicketKey if it was
@@ -943,6 +1087,14 @@ var supportedVersions = []uint16{
 func (c *Config) supportedVersions() []uint16 {
 	versions := make([]uint16, 0, len(supportedVersions))
 	for _, v := range supportedVersions {
+		if (c == nil || c.MinVersion == 0) && v < VersionTLS12 {
+			continue
+		}
+		// ECH requires TLS 1.3. EncryptedClientHelloConfigList is only used
+		// by clients.
+		if c != nil && c.EncryptedClientHelloConfigList != nil && v < VersionTLS13 {
+			continue
+		}
 		if c != nil && c.MinVersion != 0 && v < c.MinVersion {
 			continue
 		}
@@ -976,7 +1128,7 @@ func supportedVersionsFromMax(maxVersion uint16) []uint16 {
 	return versions
 }
 
-var defaultCurvePreferences = []CurveID{X25519, CurveP256, CurveP384, CurveP521}
+var defaultCurvePreferences = []CurveID{X25519MLKEM768, X25519, CurveP256, CurveP384, CurveP521}
 
 func (c *Config) curvePreferences() []CurveID {
 	if c == nil || len(c.CurvePreferences) == 0 {
@@ -992,6 +1144,25 @@ func (c *Config) supportsCurve(curve CurveID) bool {
 		}
 	}
 	return false
+}
+
+// supportsCurveTLS12 reports whether curve is enabled and usable for a
+// pre-TLS 1.3 ECDHE key exchange.
+func (c *Config) supportsCurveTLS12(curve CurveID) bool {
+	return !isTLS13OnlyKeyExchange(curve) && c.supportsCurve(curve)
+}
+
+// curvePreferencesTLS12 returns the curve preferences without the key
+// exchanges that are only allowed in TLS 1.3.
+func (c *Config) curvePreferencesTLS12() []CurveID {
+	prefs := c.curvePreferences()
+	curves := make([]CurveID, 0, len(prefs))
+	for _, curve := range prefs {
+		if !isTLS13OnlyKeyExchange(curve) {
+			curves = append(curves, curve)
+		}
+	}
+	return curves
 }
 
 // mutualVersion returns the protocol version to use given the advertised
@@ -1499,6 +1670,44 @@ NextCipherSuite:
 		}
 		varDefaultCipherSuites = append(varDefaultCipherSuites, suite.id)
 	}
+}
+
+// anyValidVerifiedChain reports whether any of the previously verified chains
+// is still valid at opts.CurrentTime and still rooted in a CA of opts.Roots.
+// It is used on session resumption, where the chain is not verified again.
+func anyValidVerifiedChain(verifiedChains [][]*x509.Certificate, opts x509.VerifyOptions) bool {
+NextChain:
+	for _, chain := range verifiedChains {
+		if len(chain) == 0 {
+			continue
+		}
+		for _, cert := range chain {
+			if opts.CurrentTime.Before(cert.NotBefore) || opts.CurrentTime.After(cert.NotAfter) {
+				continue NextChain
+			}
+		}
+		// The chain was already validated, we only care that it is rooted in a
+		// CA in opts.Roots. On platforms where we control chain validation this
+		// is a simple lookup, which we simulate by running Verify on the root.
+		// On Windows and macOS we have to do full verification again, because
+		// EKU handling might differ.
+		if runtime.GOOS == "windows" || runtime.GOOS == "darwin" || runtime.GOOS == "ios" {
+			opts.Intermediates = x509.NewCertPool()
+			if len(chain) > 2 {
+				for _, cert := range chain[1 : len(chain)-1] {
+					opts.Intermediates.AddCert(cert)
+				}
+			}
+			if _, err := chain[0].Verify(opts); err == nil {
+				return true
+			}
+		} else {
+			if _, err := chain[len(chain)-1].Verify(opts); err == nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func unexpectedMessageError(wanted, got interface{}) error {

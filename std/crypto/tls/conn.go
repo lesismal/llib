@@ -79,15 +79,17 @@ type Conn struct {
 	// This field is only to be accessed with sync/atomic.
 	handshakeStatus uint32
 	// constant after handshake; protected by handshakeMutex
-	// handshakeMutex sync.Mutex
-	handshakeErr error   // error resulting from handshake
-	vers         uint16  // TLS version
-	config       *Config // configuration passed to constructor
+	handshakeMutex sync.Mutex
+	handshakeErr   error   // error resulting from handshake
+	vers           uint16  // TLS version
+	config         *Config // configuration passed to constructor
 	// handshakes counts the number of handshakes performed on the
 	// connection so far. If renegotiation is disabled then this is either
 	// zero or one.
 	handshakes       int
 	cipherSuite      uint16
+	curveID          CurveID
+	echAccepted      bool     // whether Encrypted Client Hello was accepted
 	ocspResponse     []byte   // stapled OCSP response
 	scts             [][]byte // signed certificate timestamps from server
 	peerCertificates []*x509.Certificate
@@ -123,6 +125,14 @@ type Conn struct {
 
 	closeMux sync.Mutex
 	closed   bool
+	// activeWrites counts the goroutines in Conn.Write, protected by
+	// closeMux, so that Close doesn't write a close_notify alert
+	// concurrently with them.
+	activeWrites int
+	// activeReads counts the goroutines in Conn.Read and Conn.Handshake,
+	// protected by closeMux. The read buffers are only released once the
+	// connection is closed and none of them is still using the buffers.
+	activeReads int
 	// secureRenegotiation is true if the server echoed the secure
 	// renegotiation extension. (This is meaningless as a server because
 	// renegotiation is not supported in that case.)
@@ -136,6 +146,9 @@ type Conn struct {
 
 	haveVers  bool // version has been negotiated
 	didResume bool // whether this connection was a session resumption
+	// extMasterSecret is true if the master secret of this connection was
+	// derived using Extended Master Secret (RFC 7627).
+	extMasterSecret bool
 
 	// closeNotifySent is true if the Conn attempted to send an
 	// alertCloseNotify record.
@@ -177,6 +190,7 @@ type Conn struct {
 	serverHello          *serverHelloMsg
 	hs                   *serverHandshakeState
 	hs13                 *serverHandshakeStateTLS13
+	echServer            *echServerContext // server ECH state, see readClientHello
 	certMsg              *certificateMsgTLS13
 	certMsgVerified      []bool
 
@@ -751,6 +765,15 @@ func (c *Conn) readRecordOrCCS(expectChangeCipherSpec bool) error {
 		}
 		c.input.Reset(nil)
 
+		// readFromUntil reads at absolute offsets from the start of rawInput,
+		// so a fully consumed rawInput must be reset first. It may not have
+		// been freed yet when called recursively via retryReadRecord, for
+		// example after an ignored TLS 1.3 change_cipher_spec record.
+		if c.rawInput != nil && len(*c.rawInput) == c.rawInputOff {
+			*c.rawInput = (*c.rawInput)[:0]
+			c.rawInputOff = 0
+		}
+
 		// Read header, payload.
 		if err := c.readFromUntil(c.conn, recordHeaderLen, 0); err != nil {
 			// RFC 8446, Section 6.1 suggests that EOF without an alertCloseNotify
@@ -1160,10 +1183,11 @@ func (c *Conn) writeRecordLocked(typ recordType, data []byte) (int, error) {
 	}()
 
 	var n int
-	var maxPayload = c.maxPayloadSizeForWrite(typ)
 	for len(data) > 0 {
 		m := len(data)
-		if m > maxPayload {
+		// Recomputed per record: with dynamic record sizing, the size grows
+		// as c.bytesSent and c.packetsSent increase during a large write.
+		if maxPayload := c.maxPayloadSizeForWrite(typ); m > maxPayload {
 			m = maxPayload
 		}
 
@@ -1321,12 +1345,19 @@ func (c *Conn) Write(b []byte) (int, error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
+	// Interlock with Close below.
 	c.closeMux.Lock()
 	if c.closed {
 		c.closeMux.Unlock()
 		return 0, net.ErrClosed
 	}
+	c.activeWrites++
 	c.closeMux.Unlock()
+	defer func() {
+		c.closeMux.Lock()
+		c.activeWrites--
+		c.closeMux.Unlock()
+	}()
 
 	if err := c.Handshake(); err != nil {
 		return 0, err
@@ -1450,7 +1481,9 @@ func (c *Conn) handleKeyUpdate(keyUpdate *keyUpdateMsg) error {
 	}
 
 	newSecret := cipherSuite.nextTrafficSecret(c.in.trafficSecret)
-	c.in.setTrafficSecret(cipherSuite, newSecret)
+	if err := c.setReadTrafficSecret(cipherSuite, newSecret); err != nil {
+		return c.in.setErrorLocked(err)
+	}
 
 	if keyUpdate.updateRequested {
 		// c.out.Lock()
@@ -1508,12 +1541,10 @@ func (c *Conn) Append(b []byte) (int, error) {
 // has not yet completed. See SetDeadline, SetReadDeadline, and
 // SetWriteDeadline.
 func (c *Conn) Read(b []byte) (int, error) {
-	c.closeMux.Lock()
-	if c.closed {
-		c.closeMux.Unlock()
-		return 0, net.ErrClosed
+	if err := c.beginRead(); err != nil {
+		return 0, err
 	}
-	c.closeMux.Unlock()
+	defer c.endRead()
 
 	if err := c.Handshake(); err != nil {
 		if c.isNonBlock && err == errDataNotEnough {
@@ -1597,7 +1628,9 @@ func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error)
 		}
 		c.rawInput = c.allocator.Append(c.rawInput, bufAppend...)
 	}
-	if err := c.Handshake(); err != nil {
+	// closeMux is held for the whole call, so Close can't release the
+	// buffers concurrently and handshake doesn't need beginRead.
+	if err := c.handshake(); err != nil {
 		if c.isNonBlock && err == errDataNotEnough {
 			return len(bufAppend), 0, nil
 		}
@@ -1650,6 +1683,30 @@ func (c *Conn) AppendAndRead(bufAppend []byte, bufRead []byte) (int, int, error)
 	return len(bufAppend), n, nil
 }
 
+// beginRead registers a goroutine using the read buffers. It fails if the
+// connection is closed, since the buffers may have been released already.
+func (c *Conn) beginRead() error {
+	c.closeMux.Lock()
+	defer c.closeMux.Unlock()
+	if c.closed {
+		return net.ErrClosed
+	}
+	c.activeReads++
+	return nil
+}
+
+// endRead unregisters a goroutine registered with beginRead, and releases the
+// read buffers if the connection was closed in the meantime.
+func (c *Conn) endRead() {
+	c.closeMux.Lock()
+	c.activeReads--
+	release := c.closed && c.activeReads == 0
+	c.closeMux.Unlock()
+	if release {
+		c.release()
+	}
+}
+
 func (c *Conn) release() {
 	if c.hand != nil && cap(*c.hand) > 0 {
 		c.allocator.Free(c.hand)
@@ -1672,6 +1729,8 @@ func (c *Conn) Close() error {
 
 	closed := c.closed
 	c.closed = true
+	activeWrites := c.activeWrites
+	activeReads := c.activeReads
 
 	c.closeMux.Unlock()
 
@@ -1679,7 +1738,21 @@ func (c *Conn) Close() error {
 		return net.ErrClosed
 	}
 
-	c.release()
+	// A Read or Handshake still in progress, e.g. blocked reading from the
+	// underlying connection, releases the buffers itself when it returns.
+	if activeReads == 0 {
+		c.release()
+	}
+	if activeWrites != 0 {
+		// io.Writer and io.Closer should not be used concurrently.
+		// If Close is called while a Write is currently in-flight,
+		// interpret that as a sign that this Close is really just
+		// being used to break the Write and/or clean up resources and
+		// avoid sending the alertCloseNotify, which may block
+		// waiting on the c.out mutex.
+		return c.conn.Close()
+	}
+
 	var alertErr error
 	if c.handshakeComplete() {
 		if err := c.closeNotify(); err != nil {
@@ -1707,8 +1780,10 @@ func (c *Conn) CloseWrite() error {
 }
 
 func (c *Conn) closeNotify() error {
-	// c.out.Lock()
-	// defer c.out.Unlock()
+	// Records must not be encrypted concurrently: the sequence number is
+	// part of the AEAD nonce.
+	c.out.Lock()
+	defer c.out.Unlock()
 
 	if !c.closeNotifySent {
 		// Set a Write Deadline to prevent possibly blocking forever.
@@ -1730,8 +1805,19 @@ func (c *Conn) closeNotify() error {
 // For control over canceling or setting a timeout on a handshake, use
 // the Dialer's DialContext method.
 func (c *Conn) Handshake() error {
-	// c.handshakeMutex.Lock()
-	// defer c.handshakeMutex.Unlock()
+	if err := c.beginRead(); err != nil {
+		return err
+	}
+	defer c.endRead()
+	return c.handshake()
+}
+
+func (c *Conn) handshake() error {
+	// Serialize handshakes: a Read and a Write racing before the handshake
+	// completes must not both run handshakeFn on the same connection. The
+	// lock order is closeMux, then handshakeMutex (see AppendAndRead).
+	c.handshakeMutex.Lock()
+	defer c.handshakeMutex.Unlock()
 
 	if err := c.handshakeErr; err != nil {
 		return err
@@ -1778,11 +1864,13 @@ func (c *Conn) connectionStateLocked() ConnectionState {
 	state.NegotiatedProtocolIsMutual = true
 	state.ServerName = c.serverName
 	state.CipherSuite = c.cipherSuite
+	state.CurveID = c.curveID
+	state.ECHAccepted = c.echAccepted
 	state.PeerCertificates = c.peerCertificates
 	state.VerifiedChains = c.verifiedChains
 	state.SignedCertificateTimestamps = c.scts
 	state.OCSPResponse = c.ocspResponse
-	if !c.didResume && c.vers != VersionTLS13 {
+	if (!c.didResume || c.extMasterSecret) && c.vers != VersionTLS13 {
 		if c.clientFinishedIsFirst {
 			state.TLSUnique = c.clientFinished[:]
 		} else {
@@ -1826,6 +1914,28 @@ func (c *Conn) VerifyHostname(host string) error {
 
 func (c *Conn) handshakeComplete() bool {
 	return atomic.LoadUint32(&c.handshakeStatus) == 1
+}
+
+// handLen returns the number of buffered handshake bytes not yet consumed.
+func (c *Conn) handLen() int {
+	if c.hand == nil {
+		return 0
+	}
+	return len(*c.hand) - c.handOff
+}
+
+// setReadTrafficSecret switches the read side to a new TLS 1.3 traffic secret.
+// There must be no buffered handshake data at that point: it was encrypted
+// under the old keys and must not be processed as if it arrived under the new
+// ones (for example a server Finished pipelined with the ServerHello).
+// See CVE-2025-61730.
+func (c *Conn) setReadTrafficSecret(suite *cipherSuiteTLS13, secret []byte) error {
+	if c.handLen() != 0 {
+		c.sendAlert(alertUnexpectedMessage)
+		return errors.New("tls: handshake buffer not empty before setting read traffic secret")
+	}
+	c.in.setTrafficSecret(suite, secret)
+	return nil
 }
 
 // Session returns user session

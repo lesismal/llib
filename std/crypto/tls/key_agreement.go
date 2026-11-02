@@ -67,7 +67,11 @@ func (ka rsaKeyAgreement) generateClientKeyExchange(config *Config, clientHello 
 		return nil, nil, err
 	}
 
-	encrypted, err := rsa.EncryptPKCS1v15(config.rand(), cert.PublicKey.(*rsa.PublicKey), preMasterSecret)
+	rsaKey, ok := cert.PublicKey.(*rsa.PublicKey)
+	if !ok {
+		return nil, nil, errors.New("tls: server certificate contains incorrect key type for selected ciphersuite")
+	}
+	encrypted, err := rsa.EncryptPKCS1v15(config.rand(), rsaKey, preMasterSecret)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -145,7 +149,7 @@ type ecdheKeyAgreement struct {
 func (ka *ecdheKeyAgreement) generateServerKeyExchange(config *Config, cert *Certificate, clientHello *clientHelloMsg, hello *serverHelloMsg) (*serverKeyExchangeMsg, error) {
 	var curveID CurveID
 	for _, c := range clientHello.supportedCurves {
-		if config.supportsCurve(c) {
+		if config.supportsCurveTLS12(c) {
 			curveID = c
 			break
 		}
